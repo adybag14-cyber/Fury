@@ -1,5 +1,19 @@
 # Vaultline changelog
 
+## 5.7.0 — portable CPU rendering and audio
+
+- Add CPU BVH ray/path tracing with instancing, shadows, reflection/refraction,
+  progressive accumulation, deterministic worker-independent sampling and telemetry
+- Replace vertex-shaded software fallback with clipped per-pixel PBR rasterization,
+  material maps, alpha coverage/compositing and truly software presentation
+- Add SDL2-only stereo audio, offline WAV rendering and optional-mixer lifecycle fixes
+- Validate every shipped asset; preserve authored colors/material groups, correct
+  normals/mirrored winding, remove degenerate imported triangles and harden texture I/O
+- Integrate the authored storefront into Bldg3 while preserving collision and fallback
+- Add bounded frame/capture/photo-view CLI, frozen photo lighting and OBJ preview
+- Add CPU pixel/ray/audio/asset/runtime regression tests and reproducible audit tools
+
+
 Player-facing notes for the Fury **Vaultline** prototype. Honest scope: playable vertical slice, **not** AAA / GTA graphics. Original setting only — no Rockstar / GTA IP.
 
 ## 5.6.0 — DXR rendering and temporal reconstruction (2026-09-07)

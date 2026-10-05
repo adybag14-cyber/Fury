@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
+#include <fstream>
+#include <filesystem>
 #include <vector>
 
 namespace fury {
@@ -55,7 +57,10 @@ bool Application::init() {
   bool use_gl = m_config.prefer_opengl;
   const char* requested_backend = std::getenv("FURY_RENDERER");
   if (m_config.preferred_backend==RenderBackendKind::Software || m_config.preferred_backend==RenderBackendKind::Direct3D12 ||
-      (m_config.preferred_backend==RenderBackendKind::None && requested_backend && std::strcmp(requested_backend, "dx12") == 0)) use_gl = false;
+      m_config.preferred_backend==RenderBackendKind::CpuRayTracing ||
+      (m_config.preferred_backend==RenderBackendKind::None && requested_backend &&
+       (std::strcmp(requested_backend, "dx12") == 0 || std::strcmp(requested_backend, "cpu-ray") == 0 ||
+        std::strcmp(requested_backend, "software") == 0))) use_gl = false;
   WindowDesc desc = m_config.window;
   desc.opengl = use_gl;
 
@@ -165,7 +170,8 @@ void Application::draw_scene() {
     }
 
     // Occlusion-lite: skip if world AABB is fully behind the camera plane.
-    if (m_renderer.backend_kind() != RenderBackendKind::Direct3D12) {
+    if (m_renderer.backend_kind() != RenderBackendKind::Direct3D12 &&
+        m_renderer.backend_kind() != RenderBackendKind::CpuRayTracing) {
       Vec3 wc = e.transform.position + e.collider.center;
       Vec3 h = e.collider.half_extents;
       if (h.x <= 1e-4f && h.y <= 1e-4f && h.z <= 1e-4f) {
@@ -238,7 +244,8 @@ int Application::run() {
   m_prev_cam_pos = m_camera.position;
   Log::info("Entering main loop (Esc to quit; click to capture mouse)");
 
-  float elapsed = 0.f;
+  float render_elapsed = 0.f;
+  unsigned rendered_frames = 0;
 
   while (m_running) {
     InputState input{};
@@ -250,8 +257,8 @@ int Application::run() {
       break;
     }
 
-    const float dt = m_timer.tick();
-    elapsed += dt;
+    const float measured_dt = m_timer.tick();
+    const float dt = m_config.fixed_timestep > 0.f ? m_config.fixed_timestep : measured_dt;
 
     bool f_consumed = false;
     if (on_pre_update) {
@@ -318,7 +325,8 @@ int Application::run() {
     }
 
     m_renderer.begin_frame(m_config.clear_color);
-    m_renderer.set_time(elapsed);
+    if (!m_config.freeze_render_time) render_elapsed += dt;
+    m_renderer.set_time(render_elapsed);
     const float aspect = static_cast<float>(m_window.width()) /
                          static_cast<float>((std::max)(1, m_window.height()));
     m_renderer.set_camera_position(m_camera.position);
@@ -331,10 +339,28 @@ int Application::run() {
       draw_scene();
     }
 
-    if (on_hud) {
+    if (on_hud && m_config.show_hud) {
       on_hud();
     }
 
+    ++rendered_frames;
+    if (m_config.max_frames && rendered_frames == m_config.max_frames) {
+      if (!m_config.capture_path.empty()) {
+        std::vector<std::uint8_t> rgb; int width{}, height{};
+        if (!m_renderer.read_rgb_framebuffer(rgb, width, height)) return 1;
+        const auto parent = std::filesystem::path(m_config.capture_path).parent_path();
+        if (!parent.empty()) {
+          std::error_code error;
+          std::filesystem::create_directories(parent, error);
+          if (error) { Log::error("Frame capture directory failed: " + error.message()); return 1; }
+        }
+        std::ofstream capture(m_config.capture_path, std::ios::binary);
+        capture << "P6\n" << width << " " << height << "\n255\n";
+        capture.write(reinterpret_cast<const char*>(rgb.data()), std::streamsize(rgb.size()));
+        if (!capture) { Log::error("Frame capture write failed"); return 1; }
+      }
+      m_running = false;
+    }
     m_renderer.end_frame();
 
     if (m_config.log_fps) {
@@ -352,9 +378,10 @@ int Application::run() {
 
   Log::info("Shutdown");
   const auto rendering=m_renderer.statistics();
-  if(rendering.hardware_ray_tracing)
+  if(rendering.hardware_ray_tracing || rendering.software_ray_tracing)
     Log::info("Rendering validation: frames="+std::to_string(rendering.frame_index)+" provider="+rendering.upscaler+
-              " triangles="+std::to_string(rendering.triangle_count)+" errors="+std::to_string(rendering.validation_errors));
+              " triangles="+std::to_string(rendering.triangle_count)+" cpu_ms="+std::to_string(rendering.cpu_frame_ms)+
+              " accumulated="+std::to_string(rendering.accumulated_frames)+" errors="+std::to_string(rendering.validation_errors));
   return m_renderer.statistics().validation_errors ? 1 : 0;
 }
 

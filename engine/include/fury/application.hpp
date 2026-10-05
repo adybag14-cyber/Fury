@@ -29,6 +29,13 @@ struct AppConfig {
   /// When true, skip draw if entity origin is outside sector_focus (deep indoors).
   bool sector_hide{false};
   Aabb sector_focus{};
+  /// Optional deterministic validation run. Zero retains interactive behavior.
+  unsigned max_frames{0};
+  float fixed_timestep{0.f};
+  bool freeze_render_time{false};
+  bool show_hud{true};
+  /// Capture the last bounded frame as RGB PPM, including the game HUD.
+  std::string capture_path;
 };
 
 class Application {

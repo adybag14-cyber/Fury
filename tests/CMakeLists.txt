@@ -10,3 +10,38 @@ add_executable(fury_settings_tests settings_tests.cpp)
 target_link_libraries(fury_settings_tests PRIVATE Fury::Engine)
 fury_stage_runtime(fury_settings_tests)
 add_test(NAME rendering_settings COMMAND fury_settings_tests)
+
+add_executable(fury_audio_tests audio_tests.cpp)
+target_link_libraries(fury_audio_tests PRIVATE Fury::Engine)
+target_compile_definitions(fury_audio_tests PRIVATE FURY_TEST_AUDIO_ASSETS="${PROJECT_SOURCE_DIR}/assets/audio/meridian")
+fury_stage_runtime(fury_audio_tests)
+add_test(NAME audio_cpu COMMAND fury_audio_tests)
+
+add_executable(fury_software_raster_tests software_raster_tests.cpp)
+target_link_libraries(fury_software_raster_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_software_raster_tests)
+add_test(NAME software_rasterization COMMAND fury_software_raster_tests)
+
+add_executable(fury_asset_pipeline_tests asset_pipeline_tests.cpp ../apps/vaultline/harbor_assets.cpp)
+target_link_libraries(fury_asset_pipeline_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_asset_pipeline_tests)
+add_test(NAME asset_pipeline COMMAND fury_asset_pipeline_tests)
+set_tests_properties(asset_pipeline PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+add_executable(fury_cpu_ray_tests cpu_ray_tests.cpp)
+target_link_libraries(fury_cpu_ray_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_cpu_ray_tests)
+add_test(NAME cpu_ray_tracing COMMAND fury_cpu_ray_tests)
+
+if(TARGET fury_renderlab)
+  add_test(NAME cpu_renderlab_runtime COMMAND fury_renderlab --backend cpu-ray
+    --width 160 --height 90 --frames 2 --warmup 0 --hidden)
+  set_tests_properties(cpu_renderlab_runtime PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy;FURY_CPU_THREADS=2" TIMEOUT 60)
+endif()
+if(TARGET vaultline)
+  add_test(NAME cpu_vaultline_runtime COMMAND vaultline --cpu-ray --smoke
+    --width 160 --height 90 --frames 2)
+  set_tests_properties(cpu_vaultline_runtime PROPERTIES
+    ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy;FURY_CPU_THREADS=2;FURY_AUDIO_BACKEND=cpu"
+    WORKING_DIRECTORY "$<TARGET_FILE_DIR:vaultline>" TIMEOUT 90)
+endif()

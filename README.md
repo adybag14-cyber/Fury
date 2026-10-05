@@ -3,6 +3,21 @@
 **Fury** is an original C++17 game engine with SDL2 window/input, OpenGL/software
 rendering, and an optional Windows **Direct3D 12 / DXR 1.1 renderer**.
 
+## 5.7: portable CPU upgrade
+
+CPU rendering and audio now work without GPU APIs or SDL_mixer. The software
+rasterizer gains real clipping and per-pixel PBR maps; a separate instanced-BVH
+CPU ray/path tracer adds shadows, reflections, refraction and progressive photo
+captures. Authored asset colors/transforms are corrected and one detailed
+storefront is integrated into the playable city with its collision preserved.
+
+Start with `FURY_TRACE_MODE=ray FURY_AUDIO_BACKEND=cpu ./build/apps/vaultline/vaultline --cpu-ray --width 640 --height 360`,
+or `--soft` for rasterization. See [CPU setup, controls and limits](docs/CPU_RENDERING.md),
+[CPU audio](docs/CPU_AUDIO.md), [measured runtime comparison](docs/CPU_VALIDATION.md),
+and the [all-file asset audit](docs/ASSET_AUDIT.md).
+The game remains a prototype; CPU path tracing is resolution-dependent and
+progressive, with no real-time AAA claim.
+
 > **5.6 rendering development:** hardware ray tracing and path tracing, instanced
 > acceleration structures, metallic/roughness material maps, atmospheric scattering,
 > temporal denoising, AMD FSR and Intel XeSS super resolution, and static glTF/GLB
@@ -201,7 +216,7 @@ Stub districts on **one continuous ground plane** — no streaming / no open-wor
 
 ## Features
 
-- **C++17** engine library (`fury_engine`) + `fury_demo` + `vaultline` (**v5.5.0**)
+- **C++17** engine library (`fury_engine`) + `fury_demo` + `vaultline` (**v5.7.0**)
 - **5.5.0** — **MSAA** (`SDL_GL_MULTISAMPLE` + `GL_MULTISAMPLE`, quality 0/2/4) + **FXAA-lite** on soft/llvmpipe; soft path no-op;
   Windows `NOMINMAX` kept; Release + xvfb 124 + soft smoke
 - **5.4.0** — **better humanoids** (hands/feet/hair cube, clothing tint variation, idle breathe bob) + **IK-ish foot plant** (phase sync);

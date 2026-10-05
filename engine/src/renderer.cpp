@@ -19,6 +19,14 @@ bool Renderer::create(SDL_Window* window, int width, int height,
   }
 
   const char* requested = std::getenv("FURY_RENDERER");
+  if (preferred == RenderBackendKind::CpuRayTracing ||
+      (preferred == RenderBackendKind::None && requested && std::strcmp(requested, "cpu-ray") == 0)) {
+    auto cpu = create_cpu_ray_backend();
+    if (!cpu || !cpu->create(window, width, height)) return false;
+    m_backend = std::move(cpu);
+    m_backend->set_lighting(m_lighting);
+    return true;
+  }
   if (preferred==RenderBackendKind::Direct3D12 ||
       (preferred==RenderBackendKind::None && requested && std::strcmp(requested, "dx12") == 0)) {
     auto dx12 = create_dx12_backend();

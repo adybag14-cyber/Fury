@@ -44,6 +44,11 @@ int main() {
       close((pixel.x/pixel.w*.5f+.5f)*width,px,"Ray/raster jitter X conventions agree");
       close((.5f-pixel.y/pixel.w*.5f)*height,py,"Ray/raster jitter Y conventions agree");
     }
+    RenderDebugView view=RenderDebugView::Beauty;
+    for(auto expected:{RenderDebugView::Depth,RenderDebugView::Normals,RenderDebugView::Direct,RenderDebugView::Indirect,RenderDebugView::Beauty}) {
+      view=next_debug_view(view,false); require(view==expected,"CPU debug-view cycling reaches every supported view and wraps");
+    }
+    require(next_debug_view(RenderDebugView::Normals,true)==RenderDebugView::Motion,"GPU motion debug view retained");
     Upscaler upscaler=Upscaler::Native;
     require(parse_upscaler("fsr",upscaler)&&upscaler==Upscaler::FSR,"FSR parses");
     require(!parse_upscaler("fake",upscaler)&&upscaler==Upscaler::FSR,"Unknown upscaler not silently native");

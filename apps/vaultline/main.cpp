@@ -2257,6 +2257,7 @@ void build_harbor_metro(fury::Scene& scene) {
     const Vec3 pos{spec.pos.x, spec.size.y * 0.5f, spec.pos.z};
     const std::string bname = "Bldg" + std::to_string(bi++);
     add_solid_box(scene, mesh, bname.c_str(), pos, spec.size, bm);
+    if (bname == "Bldg3" && harbor::replace_storefront_shell(scene, bname.c_str())) continue;
 
     // Night window emissive strips on +Z / +X faces
     const float hy = spec.size.y;
@@ -3403,7 +3404,8 @@ void draw_hud_bars(fury::Renderer& r, const fury::HeistController& heist,
                                Color{220, 255, 230, 240}, 2.f);
       }
       if(i>=10) {
-        const bool available=r.backend_kind()==fury::RenderBackendKind::Direct3D12;
+        const bool available=r.backend_kind()==fury::RenderBackendKind::Direct3D12 ||
+                             (i==10 && r.backend_kind()==fury::RenderBackendKind::CpuRayTracing);
         const char* value="DX12 ONLY";
         if(available) {
           if(i==10) value=vl_set.trace_mode ? "PATH TRACED" : "RAY TRACED";
@@ -3599,7 +3601,11 @@ void draw_hud_bars(fury::Renderer& r, const fury::HeistController& heist,
 }  // namespace
 
 int main(int argc, char** argv) {
-  bool force_soft = false;
+  bool force_soft = false, force_cpu_ray = false, photo_launch=false, no_hud=false;
+  std::string capture_view;
+  int render_width=1280,render_height=720;
+  unsigned render_frames=0,cpu_spp=1,cpu_bounces=4;
+  std::string capture_path;
   bool smoke_mode = false;
   bool profile_mode = false;
   bool cinematic_mode = false;
@@ -3609,6 +3615,39 @@ int main(int argc, char** argv) {
   std::uint16_t net_port = 7777;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i] ? argv[i] : "";
+    if (a == "--cpu-ray") force_cpu_ray = true;
+    if (a == "--photo") photo_launch=true;
+    if (a == "--no-hud") no_hud=true;
+    if (a == "--view") {
+      if(i+1>=argc) { fury::Log::error("--view needs bank or storefront"); return EXIT_FAILURE; }
+      capture_view=argv[++i]; photo_launch=true;
+      if(capture_view!="bank" && capture_view!="storefront") { fury::Log::error("Unknown capture view"); return EXIT_FAILURE; }
+    }
+    if (a == "--help") {
+      std::puts("Vaultline: --soft | --cpu-ray; --width 64..7680 --height 64..4320\n"
+                "--frames N --capture image.ppm (deterministic bounded validation)\n"
+                "--spp 1..64 --bounces 1..16 (CPU ray/path quality) --smoke\n"
+                "--photo (freeze simulation/lighting for convergence); --view bank|storefront --no-hud\n"
+                "FURY_TRACE_MODE=ray|path FURY_CPU_THREADS=1..64 FURY_AUDIO_BACKEND=cpu|null|mixer");
+      return 0;
+    }
+    if (a == "--width" || a == "--height" || a == "--frames" || a == "--spp" || a == "--bounces" || a == "--capture") {
+      if(i+1>=argc) { fury::Log::error("Missing value for "+a); return EXIT_FAILURE; }
+      const char* value=argv[++i];
+      if(a=="--capture") capture_path=value;
+      else {
+        char* end{}; const long number=std::strtol(value,&end,10);
+        const long maximum=a=="--width" ? 7680 : a=="--height" ? 4320 : a=="--spp" ? 64 : a=="--bounces" ? 16 : 1000000;
+        const long minimum=(a=="--width" || a=="--height") ? 64:1;
+        if(end==value || *end || number<minimum || number>maximum) { fury::Log::error("Invalid value for "+a); return EXIT_FAILURE; }
+        if(a=="--width") render_width=int(number);
+        if(a=="--height") render_height=int(number);
+        if(a=="--frames") render_frames=unsigned(number);
+        if(a=="--spp") cpu_spp=unsigned(number);
+        if(a=="--bounces") cpu_bounces=unsigned(number);
+      }
+      continue;
+    }
     if (a == "--soft" || a == "-soft") force_soft = true;
     if (a == "--smoke" || a == "-smoke") smoke_mode = true;
     if (a == "--profile" || a == "-profile") profile_mode = true;
@@ -3632,6 +3671,8 @@ int main(int argc, char** argv) {
       net_port = static_cast<std::uint16_t>(std::atoi(a.substr(11).c_str()));
     }
   }
+  if(force_soft && force_cpu_ray) { fury::Log::error("Choose --soft or --cpu-ray"); return EXIT_FAILURE; }
+  if(!capture_path.empty() && !render_frames) { fury::Log::error("--capture requires --frames"); return EXIT_FAILURE; }
   if (const char* env = std::getenv("FURY_SOFT")) {
     if (env[0] == '1' || env[0] == 't' || env[0] == 'T' || env[0] == 'y' ||
         env[0] == 'Y') {
@@ -3699,14 +3740,19 @@ int main(int argc, char** argv) {
 
   fury::AppConfig config;
   config.window.title = "Fury — Vaultline " FURY_VERSION;
-  config.window.width = 1280;
-  config.window.height = 720;
+  config.window.width = render_width;
+  config.window.height = render_height;
+  config.max_frames=render_frames;
+  config.show_hud=!no_hud;
+  config.fixed_timestep=render_frames ? 1.f/60.f:0.f;
+  config.capture_path=capture_path;
   config.window.msaa_samples = quality.msaa_samples;  // 5.5.0 SDL_GL_MULTISAMPLE
   config.clear_color = {78, 118, 168, 255};
   config.log_fps = false;  // optional; toggle with P
   config.fps_log_interval = 1.0f;
-  config.prefer_opengl = !force_soft;
+  config.prefer_opengl = !force_soft && !force_cpu_ray;
   if(force_soft) config.preferred_backend=fury::RenderBackendKind::Software;
+  if(force_cpu_ray) config.preferred_backend=fury::RenderBackendKind::CpuRayTracing;
   config.cull_distance = quality.cull_distance;
   config.lod_mid_distance = quality.cull_distance * 0.5f;
   config.capture_mouse = !smoke_mode;
@@ -3719,6 +3765,14 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
+  if(app.renderer().backend_kind()==fury::RenderBackendKind::CpuRayTracing) {
+    auto rendering=app.renderer().settings();
+    rendering.samples_per_pixel=cpu_spp; rendering.max_bounces=cpu_bounces;
+    if(!std::getenv("FURY_TRACE_MODE")) rendering.trace_mode=static_cast<fury::TraceMode>(vl_settings.trace_mode);
+    vl_settings.trace_mode=int(rendering.trace_mode);
+    if(!app.renderer().configure(rendering)) return EXIT_FAILURE;
+    fury::Log::info("CPU tracing is resolution-dependent; use --width 640 --height 360 for progressive preview");
+  }
   if(app.renderer().backend_kind()==fury::RenderBackendKind::Direct3D12) {
     auto rendering=app.renderer().settings();
     if(std::getenv("FURY_UPSCALER")) vl_settings.upscaler=int(rendering.upscaler);
@@ -4413,6 +4467,11 @@ int main(int argc, char** argv) {
     app.camera().invert_y = vl_settings.invert_y;
     app.camera().fov_y_degrees = vl_settings.fov_y_degrees;
     audio->set_master_volume(vl_settings.master_volume);
+    if(app.renderer().backend_kind()==fury::RenderBackendKind::CpuRayTracing) {
+      auto rendering=app.renderer().settings();
+      rendering.trace_mode=static_cast<fury::TraceMode>(vl_settings.trace_mode);
+      app.renderer().configure(rendering);
+    }
     if(app.renderer().backend_kind()==fury::RenderBackendKind::Direct3D12) {
       const auto previous=app.renderer().settings(); auto rendering=previous;
       rendering.trace_mode=static_cast<fury::TraceMode>(vl_settings.trace_mode);
@@ -4776,7 +4835,7 @@ int main(int argc, char** argv) {
   float ghost_last_cash = -1.f;
 
   // Presentation + onboarding + cutscene / finale / help 2.0.0 / pursuit / factions / safehouse
-  float splash_remaining = smoke_mode ? 0.f : 1.5f;
+  float splash_remaining = (smoke_mode || photo_launch) ? 0.f : 1.5f;
   auto try_unlock_achievement = [&](fury::AchievementId id) {
     if (achievements.try_unlock(id)) {
       ach_banner.trigger(id);
@@ -4818,6 +4877,18 @@ int main(int argc, char** argv) {
   float replay_load_tip_timer = 0.f;
   float replay_load_confirm_timer = 0.f;  // F11 again loads vaultline_replay.json
   fury::PhotoMode photo_mode;
+  if(photo_launch) {
+    if(!capture_view.empty()) {
+      const Vec3 eye=capture_view=="storefront" ? Vec3{-10.f,5.f,36.f}:Vec3{18.f,8.f,22.f};
+      const Vec3 target=capture_view=="storefront" ? Vec3{-20.f,3.5f,22.f}:Vec3{0.f,4.f,0.f};
+      const Vec3 direction=fury::normalize(target-eye);
+      app.camera().position=eye;
+      app.camera().yaw=std::atan2(direction.z,direction.x);
+      app.camera().pitch=std::asin(direction.y);
+    }
+    photo_mode.enter(app.camera());
+    app.input().set_escape_modal(true);
+  }
   fury::ReplayBuffer replay;
   float photo_tip_timer = 0.f;
   float replay_tip_timer = 0.f;
@@ -5076,6 +5147,7 @@ int main(int argc, char** argv) {
   };
 
   app.on_update = [&](float dt, const fury::InputState& input) {
+    app.config().freeze_render_time=photo_mode.active;
     if (fast_travel_cd > 0.f && !map_panel.open) {
       fast_travel_cd = (std::max)(0.f, fast_travel_cd - dt);
     }
@@ -5124,7 +5196,7 @@ int main(int argc, char** argv) {
     }
 
     alarm_time += dt;
-    if (smoke_mode) {
+    if (smoke_mode && !photo_mode.active) {
       smoke_elapsed += dt;
       if (heist_capture_mode) {
         if (wishlist.update_heist_capture(app.scene(), npcs, traffic, app.camera(),
@@ -5457,7 +5529,8 @@ int main(int argc, char** argv) {
             break;
           }
           case 10: case 11: case 12:
-            if(app.renderer().backend_kind()!=fury::RenderBackendKind::Direct3D12) { changed=false; break; }
+            if(app.renderer().backend_kind()!=fury::RenderBackendKind::Direct3D12 &&
+               !(row==10 && app.renderer().backend_kind()==fury::RenderBackendKind::CpuRayTracing)) { changed=false; break; }
             if(row==10) vl_settings.trace_mode=(vl_settings.trace_mode+dir+2)%2;
             if(row==11) vl_settings.upscaler=(vl_settings.upscaler+dir+3)%3;
             if(row==12) vl_settings.upscale_quality=(vl_settings.upscale_quality+dir+5)%5;
@@ -5746,7 +5819,7 @@ int main(int argc, char** argv) {
       }
       app.camera().fly_mode = true;
       app.camera().vehicle_seated = false;
-      day_night.update(dt);
+      // Photo mode freezes lighting as well as geometry so CPU/DXR history can converge.
       fury::Lighting framed_photo = day_night.apply(base_lit);
       app.renderer().set_lighting(framed_photo);
       app.config().clear_color = day_night.sky_clear();

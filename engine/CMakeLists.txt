@@ -21,6 +21,7 @@ set(FURY_ENGINE_SOURCES
   src/gl_loader.cpp
   src/gl_backend.cpp
   src/soft_backend.cpp
+  src/cpu_ray_backend.cpp
   src/renderer.cpp
   src/render_settings.cpp
   src/application.cpp
@@ -32,6 +33,7 @@ set(FURY_ENGINE_SOURCES
   src/day_night.cpp
   src/npc.cpp
   src/audio.cpp
+  src/audio_mixer.cpp
   src/heat.cpp
   src/pursuit.cpp
   src/traffic.cpp
@@ -60,6 +62,7 @@ set(FURY_ENGINE_HEADERS
   include/fury/day_night.hpp
   include/fury/npc.hpp
   include/fury/audio.hpp
+  include/fury/audio_mixer.hpp
   include/fury/heat.hpp
   include/fury/pursuit.hpp
   include/fury/traffic.hpp
@@ -155,6 +158,10 @@ if(TARGET SDL2_mixer::SDL2_mixer)
   target_link_libraries(fury_engine PUBLIC SDL2_mixer::SDL2_mixer)
   target_compile_definitions(fury_engine PUBLIC FURY_HAS_SDL_MIXER=1)
   message(STATUS "  SDL_mixer: FOUND")
+elseif(TARGET SDL2_mixer::SDL2_mixer-static)
+  target_link_libraries(fury_engine PUBLIC SDL2_mixer::SDL2_mixer-static)
+  target_compile_definitions(fury_engine PUBLIC FURY_HAS_SDL_MIXER=1)
+  message(STATUS "  SDL_mixer: FOUND (static target)")
 elseif(SDL2_MIXER_FOUND OR SDL2_mixer_FOUND)
   if(SDL2_MIXER_INCLUDE_DIRS)
     target_include_directories(fury_engine PUBLIC ${SDL2_MIXER_INCLUDE_DIRS})
@@ -177,7 +184,7 @@ else()
     message(STATUS "  SDL_mixer: FOUND (pkg-config)")
   else()
     target_compile_definitions(fury_engine PUBLIC FURY_HAS_SDL_MIXER=0)
-    message(STATUS "  SDL_mixer: NOT FOUND (null audio)")
+    message(STATUS "  SDL_mixer: NOT FOUND (built-in CPU audio)")
   endif()
 endif()
 

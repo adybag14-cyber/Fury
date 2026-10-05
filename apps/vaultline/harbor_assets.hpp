@@ -53,7 +53,8 @@ struct HarborPrimSet {
 bool resolve_mesh_path(const char* relative, std::string& out_path);
 
 /// Load GLB (preferred) → OBJ → fallback mesh. Filters ground_walk/curb helpers.
-/// First-material merge — OK for traffic density, not for hero mission vehicles.
+/// Bakes authored base colors into vertices; scalar PBR uses the first material.
+/// Use material groups for full per-surface fidelity on hero mission vehicles.
 LoadedHarborMesh load_harbor_mesh(fury::Scene& scene, const char* asset_name,
                                   fury::Mesh fallback,
                                   const char* log_label = nullptr);
@@ -84,6 +85,11 @@ void place_merged(fury::Scene& scene, const LoadedHarborMesh& loaded,
 void place_prims(fury::Scene& scene, const HarborPrimSet& set,
                  const char* name_prefix, const fury::Vec3& pos, float yaw = 0.f,
                  bool detail = true, const char* tag = nullptr);
+
+/// Replace a generic, non-interactive Bldg* box visual with the shipped storefront.
+/// Keeps its gameplay collider/transform; excludes off-footprint export helpers.
+/// Returns false without changing the original when the asset/target is unsuitable.
+bool replace_storefront_shell(fury::Scene& scene, const char* shell_name);
 
 /// Phase 1 — Meridian Mutual modular heroes + KIT_* densifiers (no hero overlap).
 void spawn_meridian_mutual(fury::Scene& scene);

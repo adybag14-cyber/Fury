@@ -62,6 +62,7 @@ enum class RenderBackendKind {
   OpenGL,
   Software,
   Direct3D12,
+  CpuRayTracing,
 };
 
 class IRenderBackend {
@@ -165,5 +166,7 @@ class Renderer {
 std::unique_ptr<IRenderBackend> create_gl_backend();
 std::unique_ptr<IRenderBackend> create_software_backend();
 std::unique_ptr<IRenderBackend> create_dx12_backend();
+/// Portable CPU BVH ray/path tracer. No GPU or graphics context is required.
+std::unique_ptr<IRenderBackend> create_cpu_ray_backend();
 
 }  // namespace fury

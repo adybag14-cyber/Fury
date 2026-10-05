@@ -41,7 +41,7 @@ out vec4 vLightSpace1;
 void main() {
   vec4 world = uModel * vec4(aPos, 1.0);
   vWorldPos = world.xyz;
-  vNormal = mat3(uModel) * aNormal;
+  vNormal = transpose(inverse(mat3(uModel))) * aNormal;
   vColor = aColor;
   vUVBase = aUV;
   vUV = aUV + uUvScroll * uTime;
