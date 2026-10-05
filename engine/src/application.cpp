@@ -14,9 +14,115 @@
 #include <sstream>
 #include <fstream>
 #include <filesystem>
+#include <iomanip>
+#include <limits>
 #include <vector>
 
 namespace fury {
+namespace {
+
+bool validate_capture_config(const AppConfig& config) {
+  if (!config.capture_sequence_directory.empty() && config.max_frames == 0) {
+    Log::error("Frame sequence capture requires max_frames > 0");
+    return false;
+  }
+  if (config.capture_path.find('\0') != std::string::npos ||
+      config.capture_sequence_directory.find('\0') != std::string::npos) {
+    Log::error("Frame capture paths must not contain NUL characters");
+    return false;
+  }
+  return true;
+}
+
+bool prepare_sequence_directory(const std::filesystem::path& directory,
+                                const std::string& capture_path) {
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  if (error) {
+    Log::error("Frame sequence directory failed: " + directory.string() + ": " + error.message());
+    return false;
+  }
+  const bool empty = std::filesystem::is_empty(directory, error);
+  if (error || !empty) {
+    Log::error("Frame sequence directory must be empty: " + directory.string() +
+               (error ? ": " + error.message() : ""));
+    return false;
+  }
+  // Keep an optional last-frame capture outside the sequence directory, so it
+  // cannot replace an earlier frame or add an unexpected sequence image.
+  if (!capture_path.empty()) {
+    const auto last_path = std::filesystem::weakly_canonical(capture_path, error);
+    if (error) {
+      Log::error("Frame capture path failed: " + capture_path + ": " + error.message());
+      return false;
+    }
+    const auto sequence_path = std::filesystem::weakly_canonical(directory, error);
+    if (error) {
+      Log::error("Frame sequence path failed: " + directory.string() + ": " + error.message());
+      return false;
+    }
+    const auto relative_last = last_path.lexically_relative(sequence_path);
+    if (!relative_last.empty() && *relative_last.begin() != "..") {
+      Log::error("Last-frame capture must be outside the frame sequence directory: " + capture_path);
+      return false;
+    }
+  }
+  return true;
+}
+
+std::filesystem::path sequence_frame_path(const std::filesystem::path& directory,
+                                          unsigned frame, unsigned max_frames) {
+  const auto digits = (std::max)(std::size_t{6}, std::to_string(max_frames).size());
+  std::ostringstream name;
+  name << "frame_" << std::setfill('0') << std::setw(static_cast<int>(digits)) << frame << ".ppm";
+  return directory / name.str();
+}
+
+bool write_rgb_capture(const std::filesystem::path& path,
+                       const std::vector<std::uint8_t>& rgb, int width, int height) {
+  const auto parent = path.parent_path();
+  if (!parent.empty()) {
+    std::error_code error;
+    std::filesystem::create_directories(parent, error);
+    if (error) {
+      Log::error("Frame capture directory failed: " + parent.string() + ": " + error.message());
+      return false;
+    }
+  }
+  std::ofstream capture(path, std::ios::binary);
+  if (!capture) {
+    Log::error("Frame capture open failed: " + path.string());
+    return false;
+  }
+  capture << "P6\n" << width << " " << height << "\n255\n";
+  capture.write(reinterpret_cast<const char*>(rgb.data()), static_cast<std::streamsize>(rgb.size()));
+  // close() also checks errors reported only when the stream's buffer flushes.
+  capture.close();
+  if (!capture) {
+    Log::error("Frame capture write failed: " + path.string());
+    return false;
+  }
+  return true;
+}
+
+bool read_rgb_capture(Renderer& renderer, std::vector<std::uint8_t>& rgb,
+                      int& width, int& height) {
+  if (!renderer.read_rgb_framebuffer(rgb, width, height)) {
+    Log::error("Frame capture framebuffer read failed");
+    return false;
+  }
+  const auto max_pixels = (std::numeric_limits<std::size_t>::max)() / 3;
+  if (width <= 0 || height <= 0 ||
+      static_cast<std::size_t>(width) > max_pixels / static_cast<std::size_t>(height) ||
+      rgb.size() != static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3 ||
+      rgb.size() > static_cast<std::size_t>((std::numeric_limits<std::streamsize>::max)())) {
+    Log::error("Frame capture framebuffer has invalid RGB dimensions or size");
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
 
 Application::Application(AppConfig config) : m_config(std::move(config)) {}
 
@@ -31,6 +137,9 @@ Application::~Application() {
 }
 
 bool Application::init() {
+  if (!validate_capture_config(m_config)) {
+    return false;
+  }
   if (m_initialized) {
     return true;
   }
@@ -189,6 +298,18 @@ void Application::draw_scene() {
 }
 
 int Application::run() {
+  if (!validate_capture_config(m_config)) {
+    return 1;
+  }
+  const std::filesystem::path sequence_directory(m_config.capture_sequence_directory);
+  // Snapshot the sequence's bound and destinations: frame callbacks may mutate
+  // AppConfig, but must never turn a disk-writing run into an unbounded capture.
+  const unsigned sequence_max_frames = m_config.max_frames;
+  const std::string sequence_last_capture = m_config.capture_path;
+  if (!sequence_directory.empty() &&
+      !prepare_sequence_directory(sequence_directory, sequence_last_capture)) {
+    return 1;
+  }
   if (!m_initialized && !init()) {
     return 1;
   }
@@ -303,21 +424,23 @@ int Application::run() {
     }
 
     ++rendered_frames;
-    if (m_config.max_frames && rendered_frames == m_config.max_frames) {
-      if (!m_config.capture_path.empty()) {
-        std::vector<std::uint8_t> rgb; int width{}, height{};
-        if (!m_renderer.read_rgb_framebuffer(rgb, width, height)) return 1;
-        const auto parent = std::filesystem::path(m_config.capture_path).parent_path();
-        if (!parent.empty()) {
-          std::error_code error;
-          std::filesystem::create_directories(parent, error);
-          if (error) { Log::error("Frame capture directory failed: " + error.message()); return 1; }
-        }
-        std::ofstream capture(m_config.capture_path, std::ios::binary);
-        capture << "P6\n" << width << " " << height << "\n255\n";
-        capture.write(reinterpret_cast<const char*>(rgb.data()), std::streamsize(rgb.size()));
-        if (!capture) { Log::error("Frame capture write failed"); return 1; }
+    const unsigned frame_limit = sequence_directory.empty() ? m_config.max_frames : sequence_max_frames;
+    const bool last_bounded_frame = frame_limit && rendered_frames == frame_limit;
+    const std::string& last_capture = sequence_directory.empty() ? m_config.capture_path : sequence_last_capture;
+    if (!sequence_directory.empty() || (last_bounded_frame && !last_capture.empty())) {
+      std::vector<std::uint8_t> rgb;
+      int width{}, height{};
+      if (!read_rgb_capture(m_renderer, rgb, width, height) ||
+          (!sequence_directory.empty() &&
+           !write_rgb_capture(sequence_frame_path(sequence_directory, rendered_frames, sequence_max_frames),
+                              rgb, width, height)) ||
+          (last_bounded_frame && !last_capture.empty() &&
+           !write_rgb_capture(last_capture, rgb, width, height))) {
+        m_running = false;
+        return 1;
       }
+    }
+    if (last_bounded_frame) {
       m_running = false;
     }
     m_renderer.end_frame();

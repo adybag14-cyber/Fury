@@ -133,3 +133,47 @@ else()
   add_test(NAME world_water_gl COMMAND fury_world_water_tests --gl)
 endif()
 set_tests_properties(world_water_gl PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+
+foreach(test character_model character_animation npc_locomotion)
+  add_executable(fury_${test}_tests ${test}_tests.cpp)
+  target_link_libraries(fury_${test}_tests PRIVATE Fury::Engine)
+  fury_stage_runtime(fury_${test}_tests)
+  add_test(NAME ${test} COMMAND fury_${test}_tests)
+endforeach()
+add_executable(fury_npc_gameplay_tests npc_gameplay_tests.cpp
+  ../apps/vaultline/npc_roster.cpp ../apps/vaultline/npc_interaction.cpp
+  ../apps/vaultline/meridian_wishlist.cpp)
+target_link_libraries(fury_npc_gameplay_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_npc_gameplay_tests)
+add_test(NAME npc_gameplay COMMAND fury_npc_gameplay_tests)
+
+add_executable(fury_application_capture_tests application_capture_tests.cpp)
+target_link_libraries(fury_application_capture_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_application_capture_tests)
+add_test(NAME application_capture COMMAND fury_application_capture_tests)
+set_tests_properties(application_capture PROPERTIES TIMEOUT 60)
+
+add_executable(fury_npc_presentation_tests npc_presentation_tests.cpp
+  ../apps/vaultline/npc_presentation.cpp)
+target_link_libraries(fury_npc_presentation_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_npc_presentation_tests)
+add_test(NAME npc_presentation COMMAND fury_npc_presentation_tests)
+
+add_executable(fury_character_renderer_tests character_renderer_tests.cpp)
+target_link_libraries(fury_character_renderer_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_character_renderer_tests)
+add_test(NAME character_renderers COMMAND fury_character_renderer_tests)
+if(UNIX AND FURY_XVFB_RUN)
+  add_test(NAME character_renderers_gl COMMAND ${FURY_XVFB_RUN} -a $<TARGET_FILE:fury_character_renderer_tests> --gl)
+else()
+  add_test(NAME character_renderers_gl COMMAND fury_character_renderer_tests --gl)
+endif()
+set_tests_properties(character_renderers character_renderers_gl PROPERTIES TIMEOUT 90)
+set_tests_properties(character_renderers_gl PROPERTIES SKIP_RETURN_CODE 77)
+
+if(Python3_Interpreter_FOUND AND TARGET vaultline)
+  add_test(NAME npc_runtime COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/npc_runtime_tests.py
+    --vaultline $<TARGET_FILE:vaultline> --source-root ${CMAKE_SOURCE_DIR})
+  set_tests_properties(npc_runtime PROPERTIES TIMEOUT 240 PROCESSORS 2)
+endif()

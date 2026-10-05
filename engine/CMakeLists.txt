@@ -35,6 +35,8 @@ set(FURY_ENGINE_SOURCES
   src/decals.cpp
   src/day_night.cpp
   src/npc.cpp
+  src/character_model.cpp
+  src/character_animation.cpp
   src/audio.cpp
   src/audio_mixer.cpp
   src/heat.cpp
@@ -64,6 +66,8 @@ set(FURY_ENGINE_HEADERS
   include/fury/net.hpp
   include/fury/day_night.hpp
   include/fury/npc.hpp
+  include/fury/character_model.hpp
+  include/fury/character_animation.hpp
   include/fury/audio.hpp
   include/fury/audio_mixer.hpp
   include/fury/heat.hpp

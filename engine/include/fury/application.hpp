@@ -38,6 +38,9 @@ struct AppConfig {
   bool show_hud{true};
   /// Capture the last bounded frame as RGB PPM, including the game HUD.
   std::string capture_path;
+  /// Capture every rendered frame as RGB PPM after HUD drawing, before present.
+  /// Requires max_frames > 0 and a new or empty directory. See FRAME_CAPTURE.md.
+  std::string capture_sequence_directory;
 };
 
 class Application {

@@ -30,6 +30,15 @@ active. `--view metro-wide|ridge|ashcourt|depot|loft|quay|world-overview --photo
 provides fixed inspection cameras. Run `./scripts/validate-world.sh` for the
 reproducible complete-world checks and capture matrix.
 
+The [complete character-population upgrade](docs/NPC_UPGRADE.md) covers all
+18 possible actor IDs with 11 original wardrobes, articulated distance-driven
+animation, stable near/far LODs and preserved gameplay definitions. Q targeting,
+crew following and security/reset regressions are tested. Use `--npc-view ID`
+for a real-world portrait or `--npc-motion ID --frames N --capture-fps 12
+--capture-sequence DIR` for bounded live-simulation frames. `FURY_NPC_DETAIL=0`
+selects the previous visual presentation for comparison. See the
+[full population, motion videos and measured validation](docs/NPC_VALIDATION.md).
+
 The game remains a prototype; CPU path tracing is resolution-dependent and
 progressive, with no real-time AAA claim.
 

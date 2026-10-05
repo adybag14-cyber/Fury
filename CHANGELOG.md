@@ -2,6 +2,19 @@
 
 ## 5.7.0 — portable CPU rendering and audio
 
+### Complete character-population follow-up
+
+- Cover all 18 possible stable character IDs with 11 original role wardrobes,
+  deterministic individual appearance, 17-joint rigs and compact near/far LODs
+- Add allocation-free distance-driven walk/run/idle/turn/talk/crouch presentation,
+  grounded flat-terrain foot support and bounded distance-based update rates
+- Preserve the actual roster, routes, names, dialogue, mission/payout rules and
+  colliders; smooth heading/acceleration/braking and exact waypoint approach
+- Correct camera-relative Q targeting and crew offsets, synchronized security
+  bypass/reset state, natural investigation pursuit and cached dynamic respawns
+- Add real-game per-actor capture/state audits and bounded RGB frame sequences,
+  renderer/cache regressions and production-controller/runtime comparisons
+
 ### Complete playable-world visual follow-up
 
 - Upgrade all 41 eligible decorative shells across Metro/Ridge/Ashcourt/Quay,
