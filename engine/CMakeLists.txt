@@ -27,6 +27,7 @@ set(FURY_ENGINE_SOURCES
   src/renderer.cpp
   src/render_settings.cpp
   src/application.cpp
+  src/visibility.cpp
   src/heist.cpp
   src/inventory.cpp
   src/net_loopback.cpp

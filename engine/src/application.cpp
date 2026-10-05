@@ -122,15 +122,17 @@ bool Application::init() {
 void Application::request_quit() { m_running = false; }
 
 void Application::draw_scene() {
-  const float cull = m_config.cull_distance;
-  const float cull2 = cull > 0.f ? cull * cull : 0.f;
-  float mid = m_config.lod_mid_distance;
-  if (mid <= 0.f && cull > 0.f) {
-    mid = cull * 0.5f;
-  }
-  const float mid2 = mid > 0.f ? mid * mid : 0.f;
-  const Vec3 cam = m_camera.position;
-  const Vec3 fwd = m_camera.forward();
+  WorldVisibilitySettings visibility;
+  visibility.camera_position = m_camera.position;
+  visibility.camera_forward = m_camera.forward();
+  visibility.cull_distance = m_config.cull_distance;
+  visibility.lod_mid_distance = m_config.lod_mid_distance;
+  visibility.sector_hide = m_config.sector_hide;
+  visibility.sector_focus = m_config.sector_focus;
+  visibility.cull_behind_camera =
+      m_renderer.backend_kind() != RenderBackendKind::Direct3D12 &&
+      m_renderer.backend_kind() != RenderBackendKind::CpuRayTracing;
+  m_visibility_bounds.begin_frame();
 
   struct DrawItem {
     const Mesh* mesh{nullptr};
@@ -149,61 +151,17 @@ void Application::draw_scene() {
       continue;
     }
 
-    const float dx = e.transform.position.x - cam.x;
-    const float dy = e.transform.position.y - cam.y;
-    const float dz = e.transform.position.z - cam.z;
-    const float d2 = dx * dx + dy * dy + dz * dz;
-
-    if (cull2 > 0.f && d2 > cull2) {
-      continue;
-    }
-
-    // Optional sector hide — drop outdoor props when player is deep indoors.
-    if (m_config.sector_hide) {
-      const Vec3& c = e.transform.position;
-      const Aabb& f = m_config.sector_focus;
-      if (std::fabs(c.x - f.center.x) > f.half_extents.x ||
-          std::fabs(c.y - f.center.y) > f.half_extents.y ||
-          std::fabs(c.z - f.center.z) > f.half_extents.z) {
-        continue;
-      }
-    }
-
-    // Occlusion-lite: skip if world AABB is fully behind the camera plane.
-    if (m_renderer.backend_kind() != RenderBackendKind::Direct3D12 &&
-        m_renderer.backend_kind() != RenderBackendKind::CpuRayTracing) {
-      Vec3 wc = e.transform.position + e.collider.center;
-      Vec3 h = e.collider.half_extents;
-      if (h.x <= 1e-4f && h.y <= 1e-4f && h.z <= 1e-4f) {
-        h = {1.f, 1.f, 1.f};
-      }
-      h.x *= e.transform.scale.x;
-      h.y *= e.transform.scale.y;
-      h.z *= e.transform.scale.z;
-      const float rdx = wc.x - cam.x;
-      const float rdy = wc.y - cam.y;
-      const float rdz = wc.z - cam.z;
-      const float center_d = rdx * fwd.x + rdy * fwd.y + rdz * fwd.z;
-      const float extent =
-          std::fabs(h.x * fwd.x) + std::fabs(h.y * fwd.y) + std::fabs(h.z * fwd.z);
-      if (d2 > 4.f && (center_d + extent) < -0.25f) {
-        continue;
-      }
-    }
-
-    // LOD stub: beyond mid range, use lod_mesh or skip tagged detail props.
-    const Mesh* mesh = e.mesh;
-    if (mid2 > 0.f && d2 > mid2) {
-      if (e.lod_mesh) {
-        mesh = e.lod_mesh;
-      } else if (e.detail) {
-        continue;
-      }
-    }
+    const Mat4 model = e.transform.matrix();
+    const GeometryBounds primary = m_visibility_bounds.world_bounds(*e.mesh, model);
+    GeometryBounds lod;
+    if (e.lod_mesh) lod = m_visibility_bounds.world_bounds(*e.lod_mesh, model);
+    const auto decision = evaluate_world_visibility(
+        visibility, primary, e.lod_mesh ? &lod : nullptr, e.detail);
+    if (!decision.visible) continue;
 
     DrawItem item;
-    item.mesh = mesh;
-    item.model = e.transform.matrix();
+    item.mesh = decision.use_lod ? e.lod_mesh : e.mesh;
+    item.model = model;
     item.material = e.material;
     item.tex_key = static_cast<int>(e.material.texture);
     item.metallic = e.material.metallic;
@@ -211,6 +169,7 @@ void Application::draw_scene() {
     item.object_id = static_cast<std::uint64_t>(&e - m_scene.entities().data()) + 1;
     items.push_back(item);
   }
+  m_visibility_bounds.end_frame();
 
   // Batching stub: sort by texture/material to reduce binds (future: GPU instancing).
   std::sort(items.begin(), items.end(),

@@ -203,8 +203,10 @@ void main() {
     if (dot(mapped, N) > 0.0) N = mapped;
   }
 
-  // Water: wave normal scroll, refraction tint, simple shore foam (soft/llvmpipe safe).
-  if (uTextureSlot == 4) {
+  // Legacy water only: authored normal maps already describe their waves.
+  // In particular UV0 may tile many times; its edges are not physical shores.
+  // Keep the separate Water-slot reflection path below for both kinds.
+  if (uTextureSlot == 4 && uUseNormalMap == 0) {
     vec2 wuv = vUV;
     float w1 = sin(wuv.x * 14.0 + uTime * 1.6) * cos(wuv.y * 11.0 + uTime * 1.15);
     float w2 = sin(wuv.x * 6.5 - uTime * 0.95 + wuv.y * 8.0);

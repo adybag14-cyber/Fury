@@ -3,13 +3,16 @@
 **Fury** is an original C++17 game engine with SDL2 window/input, OpenGL/software
 rendering, and an optional Windows **Direct3D 12 / DXR 1.1 renderer**.
 
-## 5.7: portable CPU upgrade
+## 5.7: portable CPU rendering and a six-district visual upgrade
 
 CPU rendering and audio now work without GPU APIs or SDL_mixer. The software
 rasterizer gains real clipping and per-pixel PBR maps; a separate instanced-BVH
 CPU ray/path tracer adds shadows, reflections, refraction and progressive photo
-captures. Authored asset colors/transforms are corrected and one detailed
-storefront is integrated into the playable city with its collision preserved.
+captures. Authored asset colors/transforms are corrected. The playable world now
+has 41 rebuilt decorative building shells, Depot/Loft exterior detail, 834
+recessed window bays, district-specific roofs, coherent streets and waterfronts,
+structured plants and richer utility/industrial props. Original gameplay
+colliders, mission portals and authored branding are preserved.
 
 Start with `FURY_TRACE_MODE=ray FURY_AUDIO_BACKEND=cpu ./build/apps/vaultline/vaultline --cpu-ray --width 640 --height 360`,
 or `--soft` for rasterization. See [CPU setup, controls and limits](docs/CPU_RENDERING.md),
@@ -19,6 +22,14 @@ The subsequent [runtime material-detail pass](docs/SURFACE_VALIDATION.md) adds
 original 512px PBR maps, physically scaled masonry/concrete/wood/metal, filtered
 CPU/GPU sampling and selective bank/bench surfaces. Use `FURY_SURFACE_DETAIL=0`
 to compare against the original finishes.
+The [full-world runtime comparison and validation](docs/WORLD_VALIDATION.md)
+covers all six playable districts, street-level views and an overview, including
+actual CPU reflections across the harbor water. `FURY_WORLD_ART=0` disables this
+world-art pass for a paired comparison; the corrected rendering engine remains
+active. `--view metro-wide|ridge|ashcourt|depot|loft|quay|world-overview --photo`
+provides fixed inspection cameras. Run `./scripts/validate-world.sh` for the
+reproducible complete-world checks and capture matrix.
+
 The game remains a prototype; CPU path tracing is resolution-dependent and
 progressive, with no real-time AAA claim.
 
@@ -48,7 +59,7 @@ featuring **Meridian Mutual** bank, the **Crown & Cutler** jewelry front,
 **Ashcourt Market** (ATM heist-lite), and the **Harbor Armored Depot**.
 
 > **Honest scope (v5.5.0):** this is a **playable prototype / vertical slice**, not AAA
-> and not GTA parity. Expect colored-box districts (denser interiors + billboards / street signs, parked cars / neon / rooftop AC),
+> and not GTA parity. District architecture now has procedural facade/roof geometry; characters, gameplay props and interiors still mix authored low-poly assets and placeholders,
 > **LOD / occlusion-lite**, **low-poly humanoid** NPC/crew meshes (hands/feet/hair, clothing tints, idle breathe, IK foot plant) + **V** third-person, stub AI + **civilian traffic** + **NPC schedules**,
 > localhost net (host/join + **lobby** + mission/loot sync), quality presets (**F6**), **skill tree** (**N**) + **daily contracts** + **F4** lifetime stats / achievements,
 > **interior light zones** + door Enter/snap, **stealth** (**Ctrl** crouch + cameras/breakers), **Tab** district map + loft fast travel,

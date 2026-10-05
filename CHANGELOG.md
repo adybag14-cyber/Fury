@@ -2,7 +2,23 @@
 
 ## 5.7.0 — portable CPU rendering and audio
 
-### Runtime art and material follow-up
+### Complete playable-world visual follow-up
+
+- Upgrade all 41 eligible decorative shells across Metro/Ridge/Ashcourt/Quay,
+  plus Depot/Loft exterior details: 834 recessed window bays and varied rooflines
+- Replace oversized overlapping walkways, expose real water basins, add coherent
+  frontage/road/market/depot/quay surfaces, pier boards and retaining edges
+- Upgrade 197 existing prop/plant entities, add 25 plant groups across six
+  districts, and surgically replace all 15 authored planter spheres while
+  preserving non-foliage triangles, branding, collision and original detail culling
+- Add restrained mipmapped water materials; CPU glossy dielectric reflections
+  now trace actual off-camera geometry and honor dielectric IOR
+- Correct plane/ground winding and geometry-extent culling with cached bounds,
+  including rotated/mirrored transforms, LOD and ray shadow-caster preservation
+- Add full-world audit, fixed district/street/overview cameras, 23 test suites,
+  runtime comparison matrix, shader compilation and documented remaining limits
+
+### Earlier runtime material checkpoint
 
 - Six original 512px tileable PBR detail sets with correlated normals/roughness,
   physical units, filtered mips and bounded caches

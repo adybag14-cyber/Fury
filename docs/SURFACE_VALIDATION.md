@@ -1,5 +1,9 @@
 # Runtime surface-detail upgrade and validation
 
+This report records the earlier `b2442f4` material checkpoint. The subsequent
+[full playable-world upgrade](WORLD_VALIDATION.md) adds district geometry,
+waterfronts, vegetation/props, mapped-water reflections and current validation.
+
 This is the second, bounded visual phase after CPU checkpoint
 `bb2d03f863e3db7d7b6bc041b414afbe5c8a91b3`. It improves actual game surfaces and
 corrects GPU material handling. Source asset binaries, collision and world

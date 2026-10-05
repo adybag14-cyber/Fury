@@ -526,7 +526,12 @@ GpuMaterial Dx12Backend::pack_material(const Material& material,bool newborn) {
   gm.surface={std::clamp(material.metallic,0.f,1.f),std::clamp(material.roughness,.045f,1.f),
               (std::max)(0.f,material.emissive),float(material_slot(material))};
   gm.optical={material.wetness,material.transmission,material.index_of_refraction,newborn ? 1.f : 0.f};
-  gm.shading={material.alpha_cutoff,material.normal_scale,material.double_sided ? 1.f : 0.f,material.texture==TextureSlot::Water ? 1.f : 0.f};
+  // Existing ABI lane: 0 ordinary, 1 legacy analytic water, 2 mapped water.
+  // Real normal maps own their material response rather than being overridden
+  // by the legacy ocean's fixed roughness/transmission/wave approximation.
+  const float water_mode=material.texture==TextureSlot::Water ?
+      (material.textures && material.textures->normal.valid() ? 2.f : 1.f) : 0.f;
+  gm.shading={material.alpha_cutoff,material.normal_scale,material.double_sided ? 1.f : 0.f,water_mode};
   Vec3 emission=material.emissive_color;
   if(!material.textures) emission={emission.x*material.albedo.x,emission.y*material.albedo.y,emission.z*material.albedo.z};
   gm.emission=Vec4(emission,0);

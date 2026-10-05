@@ -83,3 +83,53 @@ add_executable(fury_surface_attachment_tests surface_attachment_tests.cpp)
 target_link_libraries(fury_surface_attachment_tests PRIVATE Fury::Engine)
 fury_stage_runtime(fury_surface_attachment_tests)
 add_test(NAME surface_attachment COMMAND fury_surface_attachment_tests)
+
+add_executable(fury_world_architecture_tests world_architecture_tests.cpp
+  ../apps/vaultline/world_architecture.cpp)
+target_link_libraries(fury_world_architecture_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_world_architecture_tests)
+add_test(NAME world_architecture COMMAND fury_world_architecture_tests)
+
+add_executable(fury_world_ground_tests world_ground_tests.cpp
+  ../apps/vaultline/world_ground.cpp)
+target_link_libraries(fury_world_ground_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_world_ground_tests)
+add_test(NAME world_ground COMMAND fury_world_ground_tests)
+
+add_executable(fury_world_life_tests world_life_tests.cpp
+  ../apps/vaultline/world_life.cpp)
+target_link_libraries(fury_world_life_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_world_life_tests)
+add_test(NAME world_life COMMAND fury_world_life_tests)
+set_tests_properties(world_life PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+add_executable(fury_world_visibility_tests world_visibility_tests.cpp)
+target_link_libraries(fury_world_visibility_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_world_visibility_tests)
+add_test(NAME world_visibility COMMAND fury_world_visibility_tests)
+
+if(Python3_Interpreter_FOUND AND TARGET vaultline)
+  add_test(NAME whole_world_runtime COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/world_runtime_tests.py
+    --vaultline $<TARGET_FILE:vaultline> --source-root ${CMAKE_SOURCE_DIR})
+  set_tests_properties(whole_world_runtime PROPERTIES TIMEOUT 180 PROCESSORS 2)
+endif()
+
+add_executable(fury_world_water_tests world_water_tests.cpp
+  ../apps/vaultline/world_water.cpp)
+target_link_libraries(fury_world_water_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_world_water_tests)
+add_test(NAME world_water COMMAND fury_world_water_tests)
+
+add_executable(fury_world_audit_tests world_audit_tests.cpp
+  ../apps/vaultline/world_audit.cpp)
+target_link_libraries(fury_world_audit_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_world_audit_tests)
+add_test(NAME world_audit COMMAND fury_world_audit_tests)
+
+if(UNIX AND FURY_XVFB_RUN)
+  add_test(NAME world_water_gl COMMAND ${FURY_XVFB_RUN} -a $<TARGET_FILE:fury_world_water_tests> --gl)
+else()
+  add_test(NAME world_water_gl COMMAND fury_world_water_tests --gl)
+endif()
+set_tests_properties(world_water_gl PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)

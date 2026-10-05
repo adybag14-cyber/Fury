@@ -1,6 +1,9 @@
 #include <fury/fury.hpp>
 #include "harbor_assets.hpp"
 #include "meridian_wishlist.hpp"
+#include "world_views.hpp"
+#include "world_audit.hpp"
+#include "world_upgrade.hpp"
 
 #include <SDL.h>
 
@@ -3605,7 +3608,7 @@ int main(int argc, char** argv) {
   std::string capture_view;
   int render_width=1280,render_height=720;
   unsigned render_frames=0,cpu_spp=1,cpu_bounces=4;
-  std::string capture_path;
+  std::string capture_path, world_audit_path;
   bool smoke_mode = false;
   bool profile_mode = false;
   bool cinematic_mode = false;
@@ -3615,20 +3618,27 @@ int main(int argc, char** argv) {
   std::uint16_t net_port = 7777;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i] ? argv[i] : "";
+    if (a == "--world-audit") {
+      if(i+1>=argc) { fury::Log::error("--world-audit needs an output JSON path"); return EXIT_FAILURE; }
+      world_audit_path=argv[++i];
+      continue;
+    }
     if (a == "--cpu-ray") force_cpu_ray = true;
     if (a == "--photo") photo_launch=true;
     if (a == "--no-hud") no_hud=true;
     if (a == "--view") {
-      if(i+1>=argc) { fury::Log::error("--view needs bank, storefront, storefront-close or bench"); return EXIT_FAILURE; }
+      if(i+1>=argc) { fury::Log::error(std::string("--view needs ")+vaultline::kWorldCaptureViewNames); return EXIT_FAILURE; }
       capture_view=argv[++i]; photo_launch=true;
-      if(capture_view!="bank" && capture_view!="storefront" && capture_view!="storefront-close" && capture_view!="bench") { fury::Log::error("Unknown capture view"); return EXIT_FAILURE; }
+      if(!vaultline::world_capture_view(capture_view)) { fury::Log::error("Unknown capture view"); return EXIT_FAILURE; }
     }
     if (a == "--help") {
       std::puts("Vaultline: --soft | --cpu-ray; --width 64..7680 --height 64..4320\n"
                 "--frames N --capture image.ppm (deterministic bounded validation)\n"
+                "--world-audit audit.json (build the real world, report preservation/coverage, exit)\n"
                 "--spp 1..64 --bounces 1..16 (CPU ray/path quality) --smoke\n"
-                "--photo (freeze simulation/lighting for convergence); --view bank|storefront|storefront-close|bench --no-hud\n"
-                "FURY_TRACE_MODE=ray|path FURY_CPU_THREADS=1..64 FURY_AUDIO_BACKEND=cpu|null|mixer");
+                "--photo (freeze simulation/lighting for convergence); --view NAME --no-hud\n"
+                "FURY_WORLD_ART=0|1 FURY_TRACE_MODE=ray|path FURY_CPU_THREADS=1..64 FURY_AUDIO_BACKEND=cpu|null|mixer");
+      std::printf("Capture views: %s\n", vaultline::kWorldCaptureViewNames);
       return 0;
     }
     if (a == "--width" || a == "--height" || a == "--frames" || a == "--spp" || a == "--bounces" || a == "--capture") {
@@ -3670,6 +3680,11 @@ int main(int argc, char** argv) {
     } else if (a.rfind("--net-port=", 0) == 0) {
       net_port = static_cast<std::uint16_t>(std::atoi(a.substr(11).c_str()));
     }
+  }
+  bool world_art_enabled=true;
+  if(const char* env=std::getenv("FURY_WORLD_ART")) {
+    if(std::strcmp(env,"0")==0) world_art_enabled=false;
+    else if(std::strcmp(env,"1")!=0) { fury::Log::error("FURY_WORLD_ART must be 0 or 1");return EXIT_FAILURE; }
   }
   if(force_soft && force_cpu_ray) { fury::Log::error("Choose --soft or --cpu-ray"); return EXIT_FAILURE; }
   if(!capture_path.empty() && !render_frames) { fury::Log::error("--capture requires --frames"); return EXIT_FAILURE; }
@@ -3743,6 +3758,7 @@ int main(int argc, char** argv) {
   config.window.width = render_width;
   config.window.height = render_height;
   config.max_frames=render_frames;
+  config.freeze_render_time=photo_launch;
   config.show_hud=!no_hud;
   config.fixed_timestep=render_frames ? 1.f/60.f:0.f;
   config.capture_path=capture_path;
@@ -3800,6 +3816,15 @@ int main(int argc, char** argv) {
   app.renderer().set_msaa_samples(quality.msaa_samples);
 
   build_harbor_metro(app.scene());
+  const auto world_before=vaultline::snapshot_world(app.scene());
+  const auto world_coverage=vaultline::upgrade_playable_world(app.scene(),world_art_enabled);
+  fury::Log::info(std::string("Whole-world art: ")+(world_art_enabled?"enabled":"baseline"));
+  if(!world_audit_path.empty()) {
+    if(!vaultline::write_world_audit(world_audit_path,app.scene(),world_before,world_art_enabled,world_coverage)) {
+      fury::Log::error("Could not write world audit: "+world_audit_path);return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+  }
 
   const fury::InteriorCatalog interiors = fury::make_harbor_interiors();
   const char* active_interior_tag = "";
@@ -4879,14 +4904,19 @@ int main(int argc, char** argv) {
   fury::PhotoMode photo_mode;
   if(photo_launch) {
     if(!capture_view.empty()) {
-      Vec3 eye{18.f,8.f,22.f},target{0.f,4.f,0.f};
-      if(capture_view=="storefront") { eye={-10.f,5.f,36.f}; target={-20.f,3.5f,22.f}; }
-      if(capture_view=="storefront-close") { eye={-16.5f,2.8f,29.5f}; target={-20.f,2.5f,26.f}; }
-      if(capture_view=="bench") { eye={6.5f,1.35f,.8f}; target={4.5f,.6f,-1.5f}; }
-      const Vec3 direction=fury::normalize(target-eye);
-      app.camera().position=eye;
+      const auto* view=vaultline::world_capture_view(capture_view);
+      const Vec3 direction=fury::normalize(view->target-view->eye);
+      app.camera().position=view->eye;
       app.camera().yaw=std::atan2(direction.z,direction.x);
       app.camera().pitch=std::asin(direction.y);
+      if(view->fov_y>0.f) app.camera().fov_y_degrees=view->fov_y;
+      app.camera().snap_look();
+      if(capture_view=="world-overview") {
+        app.config().cull_distance=500.f;
+        app.config().lod_mid_distance=500.f;
+        app.camera().far_plane=600.f;
+        base_lit.fog_start=350.f;base_lit.fog_end=650.f;
+      }
     }
     photo_mode.enter(app.camera());
     app.input().set_escape_modal(true);

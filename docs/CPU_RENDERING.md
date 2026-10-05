@@ -142,3 +142,21 @@ history invalidation, resize, deterministic multi-threaded output and both actua
 application runtimes. Audio has its own [offline/device validation](CPU_AUDIO.md).
 The oblique glass regression was mutation-tested against a deliberately broken
 exit-face culling implementation and rejected it.
+
+## Full-world inspection
+
+World art is enabled by default. `FURY_WORLD_ART=0` restores the earlier scene
+art while keeping renderer correctness fixes; only `0` and `1` are accepted.
+`--world-audit out/world.json` builds the real static world, emits coverage,
+geometry/LOD diagnostics and original gameplay-field preservation, then exits.
+Fixed `--view` choices include all six districts, street-level views and
+`world-overview`; `--help` lists them. The overview uses a deliberately extended
+500 m draw/LOD range and distant fog, so it is an inspection view rather than a
+normal gameplay-performance preset. See [full-world validation](WORLD_VALIDATION.md).
+
+CPU ray mode now continues glossy dielectric reflections at roughness <= 0.35,
+weighted by IOR-derived Fresnel reflectance. Rough diffuse ray-mode surfaces
+still use bounded direct/ambient lighting. Path mode continues full sampled
+diffuse/specular transport. Mirrors and water therefore need actual geometry
+in the submitted world; ray/DXR visibility deliberately retains off-camera
+shadow and reflection contributors within the draw range.

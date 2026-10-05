@@ -11,7 +11,7 @@ struct MaterialData {
   float4 albedo;
   float4 surface; // metallic, roughness, emissive, texture-array layer
   float4 optical; // wetness, transmission, IOR, reserved
-  float4 shading; // alpha cutoff, normal scale, double sided, water
+  float4 shading; // alpha cutoff, normal scale, double sided, water mode (1 legacy, 2 mapped)
   float4 emission;
   float4 animation; // UV scroll xy, alpha blend, world-planar tiles per meter (0 uses mesh UVs)
 };
@@ -270,7 +270,7 @@ bool trace(float3 origin, float3 direction,inout uint seed, out Hit hit) {
   hit.ior=max(1.001,m.optical.z); hit.reactive=max(saturate(max(hit.emission.x,max(hit.emission.y,hit.emission.z))*.1),m.optical.w);
   if(m.animation.z!=0) hit.reactive=max(hit.reactive,1-base_sample.a*m.albedo.a);
   hit.absorption=-log(clamp(hit.base,.01,1))*.1;
-  if (m.shading.w==0) {
+  if (m.shading.w!=1) {
     float2 d1=b.uv-a.uv,d2=c.uv-a.uv;
     float det=d1.x*d2.y-d1.y*d2.x;
     if (m.animation.w>0 || abs(det)>1e-8) {
@@ -288,7 +288,7 @@ bool trace(float3 origin, float3 direction,inout uint seed, out Hit hit) {
     }
   }
   if (m.optical.x>0) { hit.roughness=lerp(hit.roughness,.09,saturate(m.optical.x)); hit.base*=1-.35*saturate(m.optical.x); }
-  if (m.shading.w!=0) {
+  if (m.shading.w==1) {
     float2 p=hit.position.xz;
     float t=camera_time.w;
     float sx=.075*cos(p.x*.75+p.y*.3+t*.8)+.025*cos(p.x*2.1-p.y*1.5+t*1.7);
@@ -315,7 +315,8 @@ float3 brdf(Hit h, float3 v, float3 l) {
   float nl=saturate(dot(h.normal,l)), nv=saturate(dot(h.normal,v));
   if(nl<=0 || nv<=0) return 0;
   float3 hv=safe_normalize(l+v);
-  float3 f=fresnel(dot(v,hv),lerp(.04.xxx,h.base,h.metallic));
+  float dielectric_f0=pow((h.ior-1)/(h.ior+1),2);
+  float3 f=fresnel(dot(v,hv),lerp(dielectric_f0.xxx,h.base,h.metallic));
   float d=distribution(saturate(dot(h.normal,hv)),h.roughness);
   float g=masking(nv,h.roughness)*masking(nl,h.roughness);
   return ((1-f)*(1-h.metallic)*h.base/PI+f*(d*g/max(4*nv*nl,1e-6)))*(1-h.transmission);

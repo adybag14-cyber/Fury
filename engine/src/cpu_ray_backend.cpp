@@ -185,10 +185,14 @@ float ggx_g1(float ndot,float roughness) {
   const float a=roughness*roughness;
   return 2*ndot/(ndot+std::sqrt(a*a+(1-a*a)*ndot*ndot)+1e-7f);
 }
+Vec3 surface_reflectance(const Surface& s) {
+  const float ratio=(s.ior-1.f)/(s.ior+1.f),dielectric=ratio*ratio;
+  return mix({dielectric,dielectric,dielectric},s.base,s.metallic);
+}
 Vec3 brdf(const Surface& s,Vec3 view,Vec3 light) {
   const float nv=std::max(0.f,dot(s.normal,view)),nl=std::max(0.f,dot(s.normal,light));
   if(nv<=0||nl<=0) return {};
-  const Vec3 h=normalize(view+light),f=fresnel(mix({.04f,.04f,.04f},s.base,s.metallic),dot(view,h));
+  const Vec3 h=normalize(view+light),f=fresnel(surface_reflectance(s),dot(view,h));
   const float d=ggx_d(std::max(0.f,dot(s.normal,h)),s.roughness),g=ggx_g1(nv,s.roughness)*ggx_g1(nl,s.roughness);
   return (product(Vec3{1,1,1}-f,s.base)*((1-s.metallic)/pi)+f*(d*g/(4*nv*nl+1e-7f)))*(1-s.transmission);
 }
@@ -407,7 +411,7 @@ Surface CpuRayBackend::surface(const Hit& hit,const Ray& ray) const {
         basis.bitangent*((map.y*2-1)*m.normal_scale)+s.normal*(map.z*2-1));
     if(dot(s.normal,s.geometric)<0) s.normal=-s.normal;
   }
-  if(m.texture==TextureSlot::Water) {
+  if(m.texture==TextureSlot::Water && !(m.textures && m.textures->normal.valid())) {
     s.normal=normalize(s.normal+Vec3{.12f*std::sin(s.point.x*.8f+m_time),0,.09f*std::cos(s.point.z*.7f+m_time)});
   }
   if(m.wetness>0) { s.roughness=std::max(.045f,s.roughness*(1-.75f*saturate(m.wetness))); s.base=s.base*(1-.2f*saturate(m.wetness)); }
@@ -462,7 +466,10 @@ Sample CpuRayBackend::trace(Ray ray,Random& rng,std::uint64_t& rays,float primar
     if(m_settings.debug_view==RenderDebugView::Direct) break;
     if(m_settings.trace_mode==TraceMode::RayTraced) {
       radiance+=product(throughput,product(s.base,m_lighting.ambient))*((1-s.metallic)*(1-s.transmission));
-      if(s.metallic<.5f && s.transmission<.01f) break;
+      // Glossy dielectrics (water, varnish, glazing) also reflect geometry.
+      // Keep the bounded ray-mode approximation for rough diffuse surfaces;
+      // path mode continues sampling their full diffuse/specular transport.
+      if(s.metallic<.5f && s.transmission<.01f && s.roughness>.35f) break;
     }
     Vec3 next; float scatter_spread=0;
     if(s.transmission>.01f && rng.next()<s.transmission) {
@@ -473,7 +480,7 @@ Sample CpuRayBackend::trace(Ray ray,Random& rng,std::uint64_t& rays,float primar
       else { next=ray.direction*eta+s.normal*(eta*cosine-std::sqrt(k)); throughput=product(throughput,mix({1,1,1},s.base,.2f)); }
     } else if(m_settings.trace_mode==TraceMode::RayTraced) {
       scatter_spread=.25f*s.roughness*s.roughness;
-      next=reflect(ray.direction,s.normal); throughput=product(throughput,fresnel(mix({.04f,.04f,.04f},s.base,s.metallic),dot(s.normal,view)));
+      next=reflect(ray.direction,s.normal); throughput=product(throughput,fresnel(surface_reflectance(s),dot(s.normal,view)));
     } else {
       const float spec_probability=std::clamp(.25f+.5f*s.metallic,.25f,.75f);
       if(rng.next()<spec_probability) {

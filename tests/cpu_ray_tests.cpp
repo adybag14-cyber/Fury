@@ -151,6 +151,27 @@ void history_and_validation() {
   std::vector<std::uint8_t> image; int width{},height{};
   require(f.renderer->read_rgb_framebuffer(image,width,height) && width==80 && height==48,"CPU resize readback");
 }
+void glossy_dielectric_reflections() {
+  Fixture f; f.lighting.sun_intensity=0;f.lighting.ambient={0,0,0};
+  auto plane=quad();
+  Material glossy;glossy.albedo={0,0,0};glossy.metallic=0;glossy.transmission=0;
+  glossy.roughness=.2f;glossy.index_of_refraction=1.5f;
+  auto green=emission({0,1,0});green.emissive=4;
+  const std::vector<Draw> objects{{&plane,Mat4::identity(),glossy},
+      {&plane,translate({0,0,6})*scale({10,10,1}),green}};
+  const auto reflected=f.draw(objects);
+  require(pixel(reflected).y>60 && pixel(reflected).x<3 && pixel(reflected).z<3,
+          "Opaque nonmetal glossy surface must reflect off-camera geometry");
+  auto water=objects;water[0].material.index_of_refraction=1.333f;
+  const auto water_reflection=f.draw(water);
+  require(pixel(water_reflection).y>30 && pixel(water_reflection).y+10<pixel(reflected).y,
+          "Dielectric reflection must honor material IOR, including water");
+  auto matte=objects;matte[0].material.roughness=.9f;
+  require(pixel(f.draw(matte)).y<3,"Bounded ray-mode diffuse surface remains direct/ambient only");
+  auto direct_settings=f.renderer->settings();direct_settings.debug_view=RenderDebugView::Direct;
+  require(f.renderer->configure(direct_settings),"Direct debug configuration");
+  require(pixel(f.draw(objects)).y<3,"Reflections must not leak into direct-only debug view");
+}
 void shadows_and_path_determinism() {
   auto plane=quad(); Material matte; matte.albedo={.7f,.7f,.7f}; matte.roughness=.9f;
   Material clear=matte; clear.alpha_blend=true; clear.opacity=0;
@@ -179,7 +200,7 @@ int main(int argc,char** argv) {
   (void)argc; (void)argv;
   SDL_setenv("SDL_VIDEODRIVER","dummy",1);
   if(SDL_Init(SDL_INIT_VIDEO)!=0) return 1;
-  try { coverage_materials(); depth_and_instances(); tlas_order_invariance(); oblique_glass_exit(); history_and_validation(); shadows_and_path_determinism(); }
+  try { coverage_materials(); depth_and_instances(); tlas_order_invariance(); oblique_glass_exit(); history_and_validation(); glossy_dielectric_reflections(); shadows_and_path_determinism(); }
   catch(const std::exception& e) { std::cerr<<"CPU ray test: "<<e.what()<<"\n"; SDL_Quit(); return 1; }
   SDL_Quit(); std::cout<<"CPU ray/path tracing regression tests passed\n"; return 0;
 }

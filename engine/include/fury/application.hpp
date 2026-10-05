@@ -5,6 +5,7 @@
 #include "fury/renderer.hpp"
 #include "fury/scene.hpp"
 #include "fury/timer.hpp"
+#include "fury/visibility.hpp"
 #include "fury/window.hpp"
 
 #include <functional>
@@ -22,11 +23,12 @@ struct AppConfig {
   bool capture_mouse{true};
   bool enable_collision{true};
   float player_radius{0.45f};
-  /// Skip drawing entities farther than this (meters). 0 = disabled.
+  /// Skip drawing geometry farther than this from its nearest bound (meters).
+  /// <= 0 disables distance culling.
   float cull_distance{90.f};
-  /// Detail props skipped (or swapped to lod_mesh) beyond this. <=0 → 0.5 * cull.
+  /// Nearest geometry-bound distance for detail/LOD. <=0 → 0.5 * positive cull.
   float lod_mid_distance{0.f};
-  /// When true, skip draw if entity origin is outside sector_focus (deep indoors).
+  /// When true, skip geometry wholly outside sector_focus (deep indoors).
   bool sector_hide{false};
   Aabb sector_focus{};
   /// Optional deterministic validation run. Zero retains interactive behavior.
@@ -77,6 +79,7 @@ class Application {
   Input m_input;
   Camera m_camera;
   Scene m_scene;
+  MeshBoundsCache m_visibility_bounds;
   Timer m_timer;
   InputState m_last_input{};
   bool m_running{false};
