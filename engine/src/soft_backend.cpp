@@ -2,6 +2,7 @@
 
 #include "fury/log.hpp"
 #include "fury/texture.hpp"
+#include "fury/material_sampling.hpp"
 
 #include <SDL.h>
 
@@ -29,7 +30,7 @@ struct SoftVert {
   float x, y, z, rhw;
   ClipVertex attributes;
 };
-struct TangentFrame { Vec3 tangent, bitangent; };
+using TangentFrame=MaterialTangentFrame;
 struct TransparentTriangle {
   SoftVert vertices[3];
   TangentFrame frame;
@@ -88,10 +89,6 @@ Vec4 sample_texture(const std::uint8_t* pixels,int width,int height,int channels
   };
   return {bilerp(a.x,b.x,c.x,d.x),bilerp(a.y,b.y,c.y,d.y),
           bilerp(a.z,b.z,c.z,d.z),bilerp(a.w,b.w,c.w,d.w)};
-}
-Vec4 sample_texture(const RgbaImage& image,Vec2 uv,bool srgb) {
-  return image.valid()?sample_texture(image.pixels.data(),image.width,image.height,
-                                      4,uv.x,uv.y,srgb):Vec4{1,1,1,1};
 }
 Vec3 sample_texture(const Image& image,Vec2 uv,bool srgb) {
   if(image.width<=0 || image.height<=0 || image.rgb.size()<
@@ -304,15 +301,19 @@ class SoftBackend final : public IRenderBackend {
       if(!counted_instance) { ++m_stats.instance_count; counted_instance=true; }
       const Vec3 e1=vertices[1].world-vertices[0].world;
       const Vec3 e2=vertices[2].world-vertices[0].world;
+      const Vec3 face_normal=normalize(cross(e1,e2));
+      const bool world_uv=material.world_uv_scale>0 && std::isfinite(material.world_uv_scale);
+      if(world_uv) for(int k=0;k<3;++k)
+        vertices[k].uv=world_planar_projection(vertices[k].world,face_normal,material.world_uv_scale).uv;
       const Vec2 duv1{vertices[1].uv.x-vertices[0].uv.x,vertices[1].uv.y-vertices[0].uv.y};
       const Vec2 duv2{vertices[2].uv.x-vertices[0].uv.x,vertices[2].uv.y-vertices[0].uv.y};
       const float determinant=duv1.x*duv2.y-duv1.y*duv2.x;
       TangentFrame frame{};
-      if(std::fabs(determinant)>1e-10f) {
+      if(world_uv) frame=world_planar_projection(vertices[0].world,face_normal,material.world_uv_scale).frame;
+      else if(std::fabs(determinant)>1e-10f) {
         frame.tangent=(e1*duv2.y-e2*duv1.y)*(1.f/determinant);
         frame.bitangent=(e2*duv1.x-e1*duv2.x)*(1.f/determinant);
       }
-      const Vec3 face_normal=normalize(cross(e1,e2));
       for(int k=0;k<3;++k)
         if(!invertible || dot(vertices[k].normal,vertices[k].normal)<1e-12f)
           vertices[k].normal=face_normal;
@@ -462,7 +463,7 @@ class SoftBackend final : public IRenderBackend {
   }
 
   Vec3 shade(const ClipVertex& v,const TangentFrame& frame,
-             const Material& material,const Vec3& sampled_base,Vec2 uv) const {
+             const Material& material,const Vec3& sampled_base,Vec2 uv,TextureFootprint footprint) const {
     Vec3 base=multiply(multiply(v.color,material.albedo),sampled_base);
     Vec3 n=normalize(v.normal);
     const Vec3 view_dir=normalize(m_camera_pos-v.world);
@@ -472,26 +473,22 @@ class SoftBackend final : public IRenderBackend {
     float roughness=cl01(material.roughness), metallic=cl01(material.metallic);
     const auto* textures=material.textures.get();
     if(textures && textures->metallic_roughness.valid()) {
-      const Vec4 mr=sample_texture(textures->metallic_roughness,uv,false);
+      const Vec4 mr=sample_material_texture(textures->metallic_roughness,textures->metallic_roughness_mips,uv,false,footprint);
       roughness*=mr.y; metallic*=mr.z;
     }
     roughness=(std::max)(roughness,.045f);
     Vec3 encoded_normal;
     bool normal_mapped=false;
     if(textures && textures->normal.valid()) {
-      const Vec4 enc=sample_texture(textures->normal,uv,false);
+      const Vec4 enc=sample_material_texture(textures->normal,textures->normal_mips,uv,false,footprint);
       encoded_normal={enc.x,enc.y,enc.z}; normal_mapped=true;
     } else if(!textures && texture_slot_has_normal(material.texture)) {
       const auto& image=m_normal_images[static_cast<std::size_t>(material.texture)];
       if(!image.rgb.empty()) { encoded_normal=sample_texture(image,uv,false); normal_mapped=true; }
     }
     if(normal_mapped) {
-      Vec3 tangent=frame.tangent-n*dot(n,frame.tangent);
-      if(dot(tangent,tangent)<1e-12f)
-        tangent=cross(std::fabs(n.y)<.99f?Vec3{0,1,0}:Vec3{1,0,0},n);
-      tangent=normalize(tangent);
-      Vec3 bitangent=cross(n,tangent);
-      if(dot(bitangent,frame.bitangent)<0.f) bitangent=-bitangent;
+      const auto basis=orthonormalize_material_frame(n,frame);
+      const Vec3 tangent=basis.tangent,bitangent=basis.bitangent;
       const Vec3 map_n{(encoded_normal.x*2.f-1.f)*material.normal_scale,
                        (encoded_normal.y*2.f-1.f)*material.normal_scale,
                        encoded_normal.z*2.f-1.f};
@@ -552,7 +549,7 @@ class SoftBackend final : public IRenderBackend {
     Vec3 emission=textures?material.emissive_color*material.emissive:
                           multiply(base,material.emissive_color)*material.emissive;
     if(textures && textures->emissive.valid()) {
-      const Vec4 tex=sample_texture(textures->emissive,uv,true);
+      const Vec4 tex=sample_material_texture(textures->emissive,textures->emissive_mips,uv,true,footprint);
       emission=multiply(emission,{tex.x,tex.y,tex.z});
     }
     color+=emission;
@@ -577,7 +574,12 @@ class SoftBackend final : public IRenderBackend {
   void raster_triangle(SoftVert v0,SoftVert v1,SoftVert v2,
                        const TangentFrame& frame,const Material& material) {
     auto edge=[](const SoftVert& a,const SoftVert& b,float x,float y) {
-      return (x-a.x)*(b.y-a.y)-(y-a.y)*(b.x-a.x);
+      // Canonical line coefficients make a reversed shared edge exactly the
+      // negative of its neighbor, avoiding tiny gaps from subtracting different
+      // vertex origins before multiplication.
+      // Double intermediates retain small triangles at large viewport offsets.
+      return float(double(x)*(double(b.y)-a.y)+double(y)*(double(a.x)-b.x)+
+                   (double(a.y)*b.x-double(a.x)*b.y));
     };
     float area=edge(v0,v1,v2.x,v2.y);
     if(!std::isfinite(area) || std::fabs(area)<1e-8f) return;
@@ -595,6 +597,20 @@ class SoftBackend final : public IRenderBackend {
     };
     const bool inclusive0=top_left(v1,v2),inclusive1=top_left(v2,v0),inclusive2=top_left(v0,v1);
     const float inv_area=1.f/area;
+    // Barycentric gradients are constant on each clipped triangle. Differentiate
+    // UV/w and 1/w separately, then apply the quotient rule at every fragment.
+    const float wx[3]={(v2.y-v1.y)*inv_area,(v0.y-v2.y)*inv_area,(v1.y-v0.y)*inv_area};
+    const float wy[3]={(v1.x-v2.x)*inv_area,(v2.x-v0.x)*inv_area,(v0.x-v1.x)*inv_area};
+    const SoftVert* vertices[3]={&v0,&v1,&v2};
+    Vec2 numerator_dx{},numerator_dy{}; float inverse_w_dx=0,inverse_w_dy=0;
+    for(int i=0;i<3;++i) {
+      const auto& v=*vertices[i];
+      inverse_w_dx+=wx[i]*v.rhw; inverse_w_dy+=wy[i]*v.rhw;
+      numerator_dx.x+=wx[i]*v.rhw*v.attributes.uv.x;
+      numerator_dx.y+=wx[i]*v.rhw*v.attributes.uv.y;
+      numerator_dy.x+=wy[i]*v.rhw*v.attributes.uv.x;
+      numerator_dy.y+=wy[i]*v.rhw*v.attributes.uv.y;
+    }
     for(int y=y0;y<=y1;++y) {
       for(int x=x0;x<=x1;++x) {
         const float px=x+.5f,py=y+.5f;
@@ -616,10 +632,12 @@ class SoftBackend final : public IRenderBackend {
         pixel.color=p0.color*a+p1.color*b+p2.color*c;
         pixel.uv={p0.uv.x*a+p1.uv.x*b+p2.uv.x*c,p0.uv.y*a+p1.uv.y*b+p2.uv.y*c};
         pixel.opacity=p0.opacity*a+p1.opacity*b+p2.opacity*c;
+        const TextureFootprint footprint=perspective_texture_footprint(pixel.uv,numerator_dx,numerator_dy,
+            rhw,inverse_w_dx,inverse_w_dy);
         const Vec2 uv{pixel.uv.x+m_time*material.uv_scroll_u,pixel.uv.y+m_time*material.uv_scroll_v};
         Vec4 texture{1,1,1,1};
         if(material.textures) {
-          texture=sample_texture(material.textures->base_color,uv,true);
+          texture=sample_material_texture(material.textures->base_color,material.textures->base_color_mips,uv,true,footprint);
         } else if(material.texture!=TextureSlot::Water) {
           const int slot=static_cast<int>(material.texture);
           if(slot>0 && slot<static_cast<int>(TextureSlot::Count)) {
@@ -631,7 +649,7 @@ class SoftBackend final : public IRenderBackend {
         if(!std::isfinite(alpha)) continue;
         if(material.alpha_cutoff>=0.f && alpha<material.alpha_cutoff) continue;
         if(material.alpha_blend && alpha<=0.f) continue;
-        Vec3 color=shade(pixel,frame,material,{texture.x,texture.y,texture.z},uv);
+        Vec3 color=shade(pixel,frame,material,{texture.x,texture.y,texture.z},uv,footprint);
         if(!finite(color)) continue;
         if(material.alpha_blend) color=color*alpha+m_linear[index]*(1.f-alpha);
         else m_depth[index]=z; // Alpha masks discard before writing depth; blends never write it.

@@ -1,5 +1,9 @@
 # CPU upgrade: measured validation
 
+This report records the first checkpoint (`bb2d03f`). See the later
+[runtime material-detail report](SURFACE_VALIDATION.md) for the current surface
+implementation, additional tests and final paired performance observations.
+
 Validated on 2026-10-05 in a shared Linux cloud workspace: 9 available CPU cores,
 9.7 GiB RAM, GCC 14.2, C++17 Release (`-O3 -DNDEBUG`). No physical GPU or audio
 device was used. CPU runs use SDL2 2.32.10 and dummy video/audio drivers; preserved

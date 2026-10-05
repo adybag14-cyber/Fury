@@ -112,6 +112,15 @@ Imported material extensions and asset limitations are listed in
 [the complete asset audit](ASSET_AUDIT.md). The existing DX12 path was preserved;
 this document makes no claim of new Windows hardware-DXR measurements.
 
+## Higher-resolution surface detail
+
+Original 512px tileable PBR detail is now attached to eligible static surfaces,
+with mip filtering and selective hero-material integration. See
+[the implementation](SURFACE_DETAIL.md), [actual game placements](HERO_SURFACES.md)
+and [runtime before/after evidence](SURFACE_VALIDATION.md).
+`FURY_SURFACE_DETAIL=0` disables it; `FURY_SURFACE_DETAIL_RES=128|256|512` controls
+map memory without changing physical tile size.
+
 ## Measured results
 
 See [the runtime comparison and validation report](CPU_VALIDATION.md) for actual

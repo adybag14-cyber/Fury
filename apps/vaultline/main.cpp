@@ -3619,15 +3619,15 @@ int main(int argc, char** argv) {
     if (a == "--photo") photo_launch=true;
     if (a == "--no-hud") no_hud=true;
     if (a == "--view") {
-      if(i+1>=argc) { fury::Log::error("--view needs bank or storefront"); return EXIT_FAILURE; }
+      if(i+1>=argc) { fury::Log::error("--view needs bank, storefront, storefront-close or bench"); return EXIT_FAILURE; }
       capture_view=argv[++i]; photo_launch=true;
-      if(capture_view!="bank" && capture_view!="storefront") { fury::Log::error("Unknown capture view"); return EXIT_FAILURE; }
+      if(capture_view!="bank" && capture_view!="storefront" && capture_view!="storefront-close" && capture_view!="bench") { fury::Log::error("Unknown capture view"); return EXIT_FAILURE; }
     }
     if (a == "--help") {
       std::puts("Vaultline: --soft | --cpu-ray; --width 64..7680 --height 64..4320\n"
                 "--frames N --capture image.ppm (deterministic bounded validation)\n"
                 "--spp 1..64 --bounces 1..16 (CPU ray/path quality) --smoke\n"
-                "--photo (freeze simulation/lighting for convergence); --view bank|storefront --no-hud\n"
+                "--photo (freeze simulation/lighting for convergence); --view bank|storefront|storefront-close|bench --no-hud\n"
                 "FURY_TRACE_MODE=ray|path FURY_CPU_THREADS=1..64 FURY_AUDIO_BACKEND=cpu|null|mixer");
       return 0;
     }
@@ -4879,8 +4879,10 @@ int main(int argc, char** argv) {
   fury::PhotoMode photo_mode;
   if(photo_launch) {
     if(!capture_view.empty()) {
-      const Vec3 eye=capture_view=="storefront" ? Vec3{-10.f,5.f,36.f}:Vec3{18.f,8.f,22.f};
-      const Vec3 target=capture_view=="storefront" ? Vec3{-20.f,3.5f,22.f}:Vec3{0.f,4.f,0.f};
+      Vec3 eye{18.f,8.f,22.f},target{0.f,4.f,0.f};
+      if(capture_view=="storefront") { eye={-10.f,5.f,36.f}; target={-20.f,3.5f,22.f}; }
+      if(capture_view=="storefront-close") { eye={-16.5f,2.8f,29.5f}; target={-20.f,2.5f,26.f}; }
+      if(capture_view=="bench") { eye={6.5f,1.35f,.8f}; target={4.5f,.6f,-1.5f}; }
       const Vec3 direction=fury::normalize(target-eye);
       app.camera().position=eye;
       app.camera().yaw=std::atan2(direction.z,direction.x);

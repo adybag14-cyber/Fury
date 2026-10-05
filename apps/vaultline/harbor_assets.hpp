@@ -29,6 +29,14 @@ struct HarborAssetDesc {
 const HarborAssetDesc* find_asset(const char* name);
 const HarborAssetDesc* all_assets(std::size_t& out_count);
 
+/// Runtime-only detail for audited, named surfaces, before material grouping.
+/// Returns a copy; authored maps, factors and nonselected parts are retained.
+/// Image-free bench wood requests longitudinal UVs on its runtime mesh copy.
+/// The renderer resolves the optional profile only while surface detail is on.
+fury::Material hero_surface_material(const char* asset_name,
+                                    const std::string& primitive_name,
+                                    const fury::Material& authored);
+
 struct LoadedHarborMesh {
   fury::Mesh* mesh{nullptr};
   fury::Mesh* lod_mesh{nullptr};

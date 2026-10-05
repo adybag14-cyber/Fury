@@ -3,6 +3,7 @@
 #include "fury/renderer.hpp"
 #include "fury/log.hpp"
 #include "fury/texture.hpp"
+#include "fury/material_sampling.hpp"
 #include <SDL.h>
 #include <algorithm>
 #include <array>
@@ -28,8 +29,6 @@ Vec3 mix(Vec3 a,Vec3 b,float t) { return a*(1-t)+b*t; }
 float maximum(Vec3 v) { return std::max({v.x,v.y,v.z}); }
 bool finite(Vec3 v) { return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z); }
 float saturate(float x) { return std::clamp(x,0.f,1.f); }
-float srgb(float x) { return x<=.04045f ? x/12.92f : std::pow((x+.055f)/1.055f,2.4f); }
-Vec3 linear(Vec3 x) { return {srgb(x.x),srgb(x.y),srgb(x.z)}; }
 Vec3 reflect(Vec3 incident,Vec3 normal) { return incident-normal*(2*dot(incident,normal)); }
 std::uint64_t hash_bytes(std::uint64_t h,const void* bytes,std::size_t size) {
   const auto* p=static_cast<const unsigned char*>(bytes);
@@ -44,7 +43,9 @@ struct Random {
     return float((word>>22u)^word)*0x1p-32f;
   }
 };
-struct Ray { Vec3 origin,direction; };
+// Cone width is a full diameter at the origin; spread is diameter growth per
+// world-space unit. Intersection distances stay unchanged by this metadata.
+struct Ray { Vec3 origin,direction; float width{},spread{}; };
 struct Bounds {
   Vec3 lo{infinity,infinity,infinity},hi{-infinity,-infinity,-infinity};
   void add(Vec3 p) {
@@ -131,21 +132,43 @@ struct Surface {
   bool front{true};
 };
 struct Sample { Vec3 radiance,normal; float depth{infinity}; };
-Vec4 texture(const RgbaImage& image,float u,float v,bool color) {
-  if(!image.valid()) return {1,1,1,1};
-  if(!std::isfinite(u)||!std::isfinite(v)) return {1,1,1,1};
-  const float x=(u-std::floor(u))*image.width-.5f,y=(v-std::floor(v))*image.height-.5f;
-  const int ix=int(std::floor(x)),iy=int(std::floor(y)); const float tx=x-ix,ty=y-iy;
-  Vec4 result{};
-  for(int dy=0;dy<2;++dy) for(int dx=0;dx<2;++dx) {
-    const int px=((ix+dx)%image.width+image.width)%image.width,py=((iy+dy)%image.height+image.height)%image.height;
-    const auto offset=(std::size_t(py)*image.width+px)*4;
-    const float weight=(dx ? tx:1-tx)*(dy ? ty:1-ty);
-    Vec3 rgb{image.pixels[offset]/255.f,image.pixels[offset+1]/255.f,image.pixels[offset+2]/255.f};
-    if(color) rgb=linear(rgb);
-    result.x+=rgb.x*weight; result.y+=rgb.y*weight; result.z+=rgb.z*weight;
-    result.w+=image.pixels[offset+3]/255.f*weight;
+struct MaterialCoordinates {
+  Vec2 uv;
+  MaterialTangentFrame frame;
+  TextureFootprint footprint;
+  bool valid_frame{};
+};
+MaterialCoordinates coordinates(const Instance& instance,const Triangle& t,
+    float u,float v,Vec3 point,const Ray& ray,float distance,float time) {
+  const auto& m=instance.material;
+  const Vec3 e1=transform_direction(instance.model,t.edge1),e2=transform_direction(instance.model,t.edge2);
+  const bool world_uv=m.world_uv_scale>0 && std::isfinite(m.world_uv_scale);
+  Vec2 duv1{t.v[1].uv.x-t.v[0].uv.x,t.v[1].uv.y-t.v[0].uv.y};
+  Vec2 duv2{t.v[2].uv.x-t.v[0].uv.x,t.v[2].uv.y-t.v[0].uv.y};
+  MaterialCoordinates result;
+  if(world_uv) {
+    const Vec3 geometric=cross(e1,e2);
+    const auto projection=world_planar_projection(point,geometric,m.world_uv_scale);
+    result.uv=projection.uv; result.frame=projection.frame; result.valid_frame=true;
+    // Projection is affine: project edge vectors directly to avoid cancellation
+    // when instances are far from the origin.
+    duv1=world_planar_projection(e1,geometric,m.world_uv_scale).uv;
+    duv2=world_planar_projection(e2,geometric,m.world_uv_scale).uv;
+  } else {
+    const float w=1-u-v;
+    result.uv={t.v[0].uv.x*w+t.v[1].uv.x*u+t.v[2].uv.x*v,
+               t.v[0].uv.y*w+t.v[1].uv.y*u+t.v[2].uv.y*v};
+    const float det=duv1.x*duv2.y-duv2.x*duv1.y;
+    if(std::fabs(det)>1e-8f) {
+      result.frame={(e1*duv2.y-e2*duv1.y)*(1/det),(e2*duv1.x-e1*duv2.x)*(1/det)};
+      result.valid_frame=true;
+    }
   }
+  result.uv.x+=m.uv_scroll_u*time; result.uv.y+=m.uv_scroll_v*time;
+  const bool mips=m.textures && (!m.textures->base_color_mips.empty() || !m.textures->normal_mips.empty() ||
+      !m.textures->metallic_roughness_mips.empty() || !m.textures->emissive_mips.empty());
+  if(mips) result.footprint=ray_cone_texture_footprint(e1,e2,duv1,duv2,ray.direction,
+      ray.width+std::max(0.f,distance)*ray.spread);
   return result;
 }
 Vec3 cosine_direction(Vec3 normal,Random& rng) {
@@ -200,7 +223,8 @@ class CpuRayBackend final : public IRenderBackend {
   Geometry& geometry(const Mesh& mesh);
   Hit intersect(const Ray& ray,float limit=infinity) const;
   Surface surface(const Hit& hit,const Ray& ray) const;
-  float opacity(const Instance& instance,const Triangle& triangle,float u,float v) const;
+  float opacity(const Instance& instance,const Triangle& triangle,float u,float v,
+                const Ray& ray,float distance) const;
   Vec3 environment(Vec3 direction) const;
   Sample trace(Ray ray,Random& rng,std::uint64_t& rays,float primary_limit) const;
   void render();
@@ -304,18 +328,19 @@ void CpuRayBackend::draw_mesh(const Mesh& mesh,const Mat4& model,const Material&
   hash_value(m_frame_hash,material.transmission); hash_value(m_frame_hash,material.index_of_refraction); hash_value(m_frame_hash,material.alpha_cutoff);
   hash_value(m_frame_hash,material.normal_scale); hash_value(m_frame_hash,material.double_sided); hash_value(m_frame_hash,material.alpha_blend);
   hash_value(m_frame_hash,material.texture); hash_value(m_frame_hash,material.wetness);
+  hash_value(m_frame_hash,material.detail_texture); hash_value(m_frame_hash,material.world_uv_scale);
   hash_value(m_frame_hash,material.uv_scroll_u); hash_value(m_frame_hash,material.uv_scroll_v);
   const auto* maps=material.textures.get(); hash_value(m_frame_hash,maps);
   if(material.texture==TextureSlot::Water || material.uv_scroll_u!=0 || material.uv_scroll_v!=0) hash_value(m_frame_hash,m_time);
   m_instances.push_back(std::move(instance));
 }
-float CpuRayBackend::opacity(const Instance& instance,const Triangle& t,float u,float v) const {
+float CpuRayBackend::opacity(const Instance& instance,const Triangle& t,float u,float v,
+                             const Ray& ray,float distance) const {
   const auto& m=instance.material; const float w=1-u-v;
   float alpha=m.opacity*(t.v[0].opacity*w+t.v[1].opacity*u+t.v[2].opacity*v);
   if(m.textures&&m.textures->base_color.valid()) {
-    const float tu=t.v[0].uv.x*w+t.v[1].uv.x*u+t.v[2].uv.x*v+m.uv_scroll_u*m_time;
-    const float tv=t.v[0].uv.y*w+t.v[1].uv.y*u+t.v[2].uv.y*v+m.uv_scroll_v*m_time;
-    alpha*=texture(m.textures->base_color,tu,tv,false).w;
+    const auto c=coordinates(instance,t,u,v,ray.origin+ray.direction*distance,ray,distance,m_time);
+    alpha*=sample_material_texture(m.textures->base_color,m.textures->base_color_mips,c.uv,false,c.footprint).w;
   }
   return saturate(alpha);
 }
@@ -334,7 +359,7 @@ Hit CpuRayBackend::intersect(const Ray& ray,float limit) const {
       const float u=dot(d,p)*inverse_d; if(u<0||u>1) return;
       const Vec3 q=cross(d,t.edge1); const float v=dot(local.direction,q)*inverse_d; if(v<0||u+v>1) return;
       const float distance=dot(t.edge2,q)*inverse_d; if(distance<epsilon||distance>=triangle_limit) return;
-      if(instance.material.alpha_cutoff>=0 && opacity(instance,t,u,v)<instance.material.alpha_cutoff) return;
+      if(instance.material.alpha_cutoff>=0 && opacity(instance,t,u,v,ray,distance)<instance.material.alpha_cutoff) return;
       closest={distance,u,v,index,triangle,true}; triangle_limit=distance;
     });
   });
@@ -354,33 +379,33 @@ Surface CpuRayBackend::surface(const Hit& hit,const Ray& ray) const {
   s.base=product(m.albedo,interpolate(t.v[0].color,t.v[1].color,t.v[2].color));
   s.metallic=saturate(m.metallic); s.roughness=std::clamp(m.roughness,.045f,1.f);
   s.transmission=saturate(m.transmission); s.ior=std::clamp(m.index_of_refraction,1.0001f,3.f);
-  s.alpha=m.alpha_blend ? opacity(instance,t,hit.u,hit.v):1.f;
+  s.alpha=m.alpha_blend ? opacity(instance,t,hit.u,hit.v,ray,hit.t):1.f;
   s.emission=m.emissive_color*std::max(0.f,m.emissive);
   if(!m.textures) s.emission=product(s.emission,s.base);
-  const float u=t.v[0].uv.x*w+t.v[1].uv.x*hit.u+t.v[2].uv.x*hit.v+m.uv_scroll_u*m_time;
-  const float v=t.v[0].uv.y*w+t.v[1].uv.y*hit.u+t.v[2].uv.y*hit.v+m.uv_scroll_v*m_time;
+  const auto c=coordinates(instance,t,hit.u,hit.v,s.point,ray,hit.t,m_time);
   const RgbaImage* normal_map=nullptr;
+  const std::vector<RgbaImage>* normal_mips=nullptr;
+  static const std::vector<RgbaImage> no_mips;
   if(m.textures) {
-    const auto base=texture(m.textures->base_color,u,v,true); s.base=product(s.base,{base.x,base.y,base.z});
-    const auto mr=texture(m.textures->metallic_roughness,u,v,false); s.metallic*=mr.z; s.roughness=std::clamp(s.roughness*mr.y,.045f,1.f);
-    const auto emission=texture(m.textures->emissive,u,v,true); s.emission=product(s.emission,{emission.x,emission.y,emission.z});
-    if(m.textures->normal.valid()) normal_map=&m.textures->normal;
+    const auto& maps=*m.textures;
+    const auto base=sample_material_texture(maps.base_color,maps.base_color_mips,c.uv,true,c.footprint);
+    s.base=product(s.base,{base.x,base.y,base.z});
+    const auto mr=sample_material_texture(maps.metallic_roughness,maps.metallic_roughness_mips,c.uv,false,c.footprint);
+    s.metallic*=mr.z; s.roughness=std::clamp(s.roughness*mr.y,.045f,1.f);
+    const auto emission=sample_material_texture(maps.emissive,maps.emissive_mips,c.uv,true,c.footprint);
+    s.emission=product(s.emission,{emission.x,emission.y,emission.z});
+    if(maps.normal.valid()) { normal_map=&maps.normal; normal_mips=&maps.normal_mips; }
   } else if(unsigned(m.texture)<m_slots.size() && m.texture!=TextureSlot::None) {
-    const auto base=texture(m_slots[unsigned(m.texture)],u,v,true); s.base=product(s.base,{base.x,base.y,base.z});
-    if(m_normals[unsigned(m.texture)].valid()) normal_map=&m_normals[unsigned(m.texture)];
+    const auto base=sample_material_texture(m_slots[unsigned(m.texture)],no_mips,c.uv,true);
+    s.base=product(s.base,{base.x,base.y,base.z});
+    if(m_normals[unsigned(m.texture)].valid()) { normal_map=&m_normals[unsigned(m.texture)]; normal_mips=&no_mips; }
   }
-  if(normal_map) {
-    const auto map=texture(*normal_map,u,v,false);
-    const float du1=t.v[1].uv.x-t.v[0].uv.x,dv1=t.v[1].uv.y-t.v[0].uv.y;
-    const float du2=t.v[2].uv.x-t.v[0].uv.x,dv2=t.v[2].uv.y-t.v[0].uv.y,det=du1*dv2-du2*dv1;
-    if(std::fabs(det)>1e-8f) {
-      Vec3 tangent=transform_direction(instance.model,(t.edge1*dv2-t.edge2*dv1)*(1/det));
-      const Vec3 bitangent=transform_direction(instance.model,(t.edge2*du1-t.edge1*du2)*(1/det));
-      tangent=normalize(tangent-s.normal*dot(tangent,s.normal));
-      Vec3 b=normalize(cross(s.normal,tangent)); if(dot(b,bitangent)<0) b=-b;
-      s.normal=normalize(tangent*((map.x*2-1)*m.normal_scale)+b*((map.y*2-1)*m.normal_scale)+s.normal*(map.z*2-1));
-      if(dot(s.normal,s.geometric)<0) s.normal=-s.normal;
-    }
+  if(normal_map && c.valid_frame) {
+    const auto map=sample_material_texture(*normal_map,*normal_mips,c.uv,false,c.footprint);
+    const auto basis=orthonormalize_material_frame(s.normal,c.frame);
+    s.normal=normalize(basis.tangent*((map.x*2-1)*m.normal_scale)+
+        basis.bitangent*((map.y*2-1)*m.normal_scale)+s.normal*(map.z*2-1));
+    if(dot(s.normal,s.geometric)<0) s.normal=-s.normal;
   }
   if(m.texture==TextureSlot::Water) {
     s.normal=normalize(s.normal+Vec3{.12f*std::sin(s.point.x*.8f+m_time),0,.09f*std::cos(s.point.z*.7f+m_time)});
@@ -399,7 +424,10 @@ Sample CpuRayBackend::trace(Ray ray,Random& rng,std::uint64_t& rays,float primar
     ++rays; const Hit hit=intersect(ray,bounce==0 ? primary_limit:infinity);
     if(!hit.found) { radiance+=product(throughput,environment(ray.direction)); break; }
     const Surface s=surface(hit,ray);
-    if(s.alpha<1 && rng.next()>s.alpha && transparent++<64) { ray.origin=s.point+ray.direction*epsilon*4; primary_limit-=hit.t+epsilon*4; continue; }
+    if(s.alpha<1 && rng.next()>s.alpha && transparent++<64) {
+      ray.width+=(hit.t+epsilon*4)*ray.spread;
+      ray.origin=s.point+ray.direction*epsilon*4; primary_limit-=hit.t+epsilon*4; continue;
+    }
     if(bounce==0) { output.normal=s.normal; output.depth=length(s.point-m_camera); }
     const Vec3 view=-ray.direction;
     radiance+=product(throughput,s.emission);
@@ -407,7 +435,7 @@ Sample CpuRayBackend::trace(Ray ray,Random& rng,std::uint64_t& rays,float primar
     auto illuminate=[&](Vec3 direction,Vec3 energy,float distance) {
       const float nl=std::max(0.f,dot(s.normal,direction)); if(nl<=0) return;
       Vec3 visibility{1,1,1};
-      Ray shadow{s.point+s.geometric*epsilon*4,direction};
+      Ray shadow{s.point+s.geometric*epsilon*4,direction,ray.width+hit.t*ray.spread,0};
       float remaining=distance;
       for(unsigned layer=0;layer<64;++layer) {
         ++rays; const auto obstruction=intersect(shadow,remaining);
@@ -436,7 +464,7 @@ Sample CpuRayBackend::trace(Ray ray,Random& rng,std::uint64_t& rays,float primar
       radiance+=product(throughput,product(s.base,m_lighting.ambient))*((1-s.metallic)*(1-s.transmission));
       if(s.metallic<.5f && s.transmission<.01f) break;
     }
-    Vec3 next;
+    Vec3 next; float scatter_spread=0;
     if(s.transmission>.01f && rng.next()<s.transmission) {
       const float eta=s.front ? 1/s.ior:s.ior,cosine=saturate(dot(s.normal,view));
       const float f0=(s.ior-1)/(s.ior+1),f=f0*f0+(1-f0*f0)*std::pow(1-cosine,5.f);
@@ -444,16 +472,18 @@ Sample CpuRayBackend::trace(Ray ray,Random& rng,std::uint64_t& rays,float primar
       if(k<0||rng.next()<f) next=reflect(ray.direction,s.normal);
       else { next=ray.direction*eta+s.normal*(eta*cosine-std::sqrt(k)); throughput=product(throughput,mix({1,1,1},s.base,.2f)); }
     } else if(m_settings.trace_mode==TraceMode::RayTraced) {
+      scatter_spread=.25f*s.roughness*s.roughness;
       next=reflect(ray.direction,s.normal); throughput=product(throughput,fresnel(mix({.04f,.04f,.04f},s.base,s.metallic),dot(s.normal,view)));
     } else {
       const float spec_probability=std::clamp(.25f+.5f*s.metallic,.25f,.75f);
       if(rng.next()<spec_probability) {
+        scatter_spread=.5f*s.roughness*s.roughness;
         const float a=s.roughness*s.roughness,phi=2*pi*rng.next(),u=rng.next();
         const float c=std::sqrt((1-u)/(1+(a*a-1)*u)),sine=std::sqrt(std::max(0.f,1-c*c));
         const Vec3 tangent=normalize(cross(std::fabs(s.normal.y)<.99f ? Vec3{0,1,0}:Vec3{1,0,0},s.normal));
         const Vec3 half=normalize(tangent*(sine*std::cos(phi))+cross(s.normal,tangent)*(sine*std::sin(phi))+s.normal*c);
         next=reflect(ray.direction,half);
-      } else next=cosine_direction(s.normal,rng);
+      } else { next=cosine_direction(s.normal,rng); scatter_spread=.5f; }
       const float nl=dot(s.normal,next); if(nl<=0 || dot(s.geometric,next)<=0) break;
       const Vec3 half=normalize(view+next);
       const float pdf_spec=ggx_d(std::max(0.f,dot(s.normal,half)),s.roughness)*std::max(0.f,dot(s.normal,half))/(4*std::max(1e-6f,dot(view,half)));
@@ -464,7 +494,11 @@ Sample CpuRayBackend::trace(Ray ray,Random& rng,std::uint64_t& rays,float primar
     // Russian roulette keeps the estimator unbiased while bounding long paths.
     if(bounce>=2) { const float survival=std::clamp(maximum(throughput),.05f,.95f); if(rng.next()>survival) break; throughput=throughput*(1/survival); }
     const float sign=dot(next,s.geometric)>=0 ? 1.f:-1.f;
-    ray={s.point+s.geometric*(epsilon*4*sign),normalize(next)}; ++bounce;
+    // A practical cone approximation, not exact ray differentials: keep the
+    // incoming pixel footprint and widen by the rough specular/diffuse lobe.
+    // Smooth transmission preserves spread, avoiding blanket material blur.
+    ray={s.point+s.geometric*(epsilon*4*sign),normalize(next),
+         ray.width+hit.t*ray.spread,ray.spread+scatter_spread}; ++bounce;
   }
   if(m_settings.debug_view==RenderDebugView::Normals) output.radiance=output.normal*.5f+Vec3{.5f,.5f,.5f};
   else if(m_settings.debug_view==RenderDebugView::Depth) { const float d=std::isfinite(output.depth) ? 1/(1+output.depth*.08f):0; output.radiance={d,d,d}; }
@@ -520,7 +554,20 @@ void CpuRayBackend::render() {
           Vec4 near=mul(inverse_vp,{px,py,-1,1}),far=mul(inverse_vp,{px,py,1,1});
           const Vec3 origin{near.x/near.w,near.y/near.w,near.z/near.w};
           const Vec3 target{far.x/far.w,far.y/far.w,far.z/far.w};
-          const auto result=trace({origin,normalize(target-origin)},rng,rays,length(target-origin));
+          const Vec3 direction=normalize(target-origin);
+          // Adjacent unprojected pixel rays provide a projection-aware primary
+          // cone. Orthographic views get a constant width and zero spread;
+          // perspective views grow with distance beyond the near plane.
+          auto adjacent=[&](float dx,float dy,Vec3& near_delta,Vec3& direction_delta) {
+            const Vec4 a=mul(inverse_vp,{px+dx,py+dy,-1,1}),b=mul(inverse_vp,{px+dx,py+dy,1,1});
+            const Vec3 o{a.x/a.w,a.y/a.w,a.z/a.w},target2{b.x/b.w,b.y/b.w,b.z/b.w};
+            near_delta=o-origin; direction_delta=normalize(target2-o)-direction;
+          };
+          Vec3 near_x,near_y,direction_x,direction_y;
+          adjacent(2.f/m_width,0,near_x,direction_x); adjacent(0,2.f/m_height,near_y,direction_y);
+          const float width=std::max(length(near_x),length(near_y));
+          const float spread=std::max(length(direction_x),length(direction_y));
+          const auto result=trace({origin,direction,width,spread},rng,rays,length(target-origin));
           color+=result.radiance; normal+=result.normal; depth=std::min(depth,result.depth);
         }
         color=color*(1.f/m_settings.samples_per_pixel); m_sum[index]+=color;

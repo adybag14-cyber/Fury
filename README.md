@@ -15,6 +15,10 @@ Start with `FURY_TRACE_MODE=ray FURY_AUDIO_BACKEND=cpu ./build/apps/vaultline/va
 or `--soft` for rasterization. See [CPU setup, controls and limits](docs/CPU_RENDERING.md),
 [CPU audio](docs/CPU_AUDIO.md), [measured runtime comparison](docs/CPU_VALIDATION.md),
 and the [all-file asset audit](docs/ASSET_AUDIT.md).
+The subsequent [runtime material-detail pass](docs/SURFACE_VALIDATION.md) adds
+original 512px PBR maps, physically scaled masonry/concrete/wood/metal, filtered
+CPU/GPU sampling and selective bank/bench surfaces. Use `FURY_SURFACE_DETAIL=0`
+to compare against the original finishes.
 The game remains a prototype; CPU path tracing is resolution-dependent and
 progressive, with no real-time AAA claim.
 

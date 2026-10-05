@@ -1,4 +1,5 @@
 #include "coastal_scene.hpp"
+#include "surface_gallery.hpp"
 #include "fury/log.hpp"
 #include "fury/window.hpp"
 #include "fury/gltf.hpp"
@@ -61,6 +62,7 @@ int main(int argc,char** argv) {
     RenderSettings settings;
     unsigned width=1280,height=720,frames=0,warmup=16;
     float asset_yaw=0.f;
+    bool surface_gallery=false;
     bool hidden=false,animate=false,moving_camera=false,resize_test=false,camera_cut=false,gltf_only=false,deform=false,cycle_upscalers=false,alpha_test=false;
     #ifdef _WIN32
     std::string backend="dx12";
@@ -101,6 +103,7 @@ int main(int argc,char** argv) {
       else if(arg=="--deform-test") deform=true;
       else if(arg=="--upscaler-cycle-test") cycle_upscalers=true;
       else if(arg=="--alpha-test") alpha_test=true;
+      else if(arg=="--surface-gallery") surface_gallery=true;
       else if(arg=="--camera-motion") moving_camera=true;
       else if(arg=="--resize-test") resize_test=true;
       else if(arg=="--camera-cut") camera_cut=true;
@@ -114,6 +117,7 @@ int main(int argc,char** argv) {
           "--frames N (0=interactive) --spp 1..64 --bounces 1..16 --exposure N --capture image.ppm\n"
           "--report metrics.json --warmup N --hidden --animate --camera-motion --camera-cut\n"
           "--resize-test --no-denoise --no-accumulate --no-vsync --debug --gltf asset.gltf --gltf-only\n"
+          "--surface-gallery (physical-scale six-material comparison fixture)\n"
           "--obj asset.obj --asset-only --asset-yaw degrees (neutral asset preview; OBJ materials not imported)\n"
           "--pier modular_wooden_pier_2k.gltf --trees island_tree_01_2k.gltf (CC0 detail assets) --deform-test\n"
           "--debug-view beauty|depth|normals|motion|direct|indirect\n"
@@ -123,6 +127,7 @@ int main(int argc,char** argv) {
     if(!std::isfinite(asset_yaw)) throw std::runtime_error("Invalid asset yaw");
     if(width<64 || height<64 || width>7680 || height>4320) throw std::runtime_error("Dimensions outside 64..7680 by 64..4320");
     if(backend!="dx12" && backend!="opengl" && backend!="software" && backend!="cpu-ray") throw std::runtime_error("Invalid backend");
+    if(surface_gallery && (!gltf_path.empty() || !obj_path.empty() || alpha_test)) throw std::runtime_error("Surface gallery cannot be combined with imported/alpha fixtures");
     if(!gltf_path.empty() && !obj_path.empty()) throw std::runtime_error("Choose --gltf or --obj");
     set_environment("FURY_RENDERER",backend.c_str());
     set_environment("FURY_UPSCALER","native");
@@ -141,7 +146,8 @@ int main(int argc,char** argv) {
       if((backend=="dx12" || backend=="cpu-ray") && !renderer.configure(settings)) throw std::runtime_error("Renderer configuration failed");
       if(backend!="dx12" && settings.upscaler!=Upscaler::Native) throw std::runtime_error("FSR/XeSS require the DX12 backend");
       CoastalScene scene;
-      if(!gltf_only && !alpha_test) scene.create(pier_path,tree_path);
+      if(surface_gallery) create_surface_gallery(scene);
+      else if(!gltf_only && !alpha_test) scene.create(pier_path,tree_path);
       Mesh alpha_quad; Material alpha_front,alpha_back;
       if(alpha_test) {
         alpha_quad.vertices={{{-1,-1,0},{0,0,1},{1,1,1},{0,1}},{{1,-1,0},{0,0,1},{1,1,1},{1,1}},
@@ -181,7 +187,7 @@ int main(int argc,char** argv) {
       light.point_light_count=2;
       light.point_lights[0]={{-.1f,3.55f,-4.5f},{1,.53f,.18f},24,8};
       light.point_lights[1]={{6.1f,3.55f,-4.5f},{1,.53f,.18f},24,8};
-      if(gltf_only) {
+      if(gltf_only || surface_gallery) {
         light.sun_direction=normalize({-.6f,-1.f,-.8f}); light.sun_color={1,1,1}; light.sun_intensity=2.5f;
         light.ambient={.18f,.18f,.18f}; light.point_light_count=0;
         light.fog_start=1e6f; light.fog_end=2e6f;
@@ -194,6 +200,7 @@ int main(int argc,char** argv) {
       const auto start=std::chrono::steady_clock::now();
       auto last_input_time=start;
       Vec3 free_eye{10,4.7f,15},free_target{0,1,-1};
+      if(surface_gallery) { free_eye={6.6f,5.6f,9.2f}; free_target={0,.7f,-.8f}; }
       if(gltf_only) {
         free_target=(imported.bounds_min+imported.bounds_max)*.5f;
         const float radius=asset_fit_radius(imported,width,height);
@@ -256,6 +263,7 @@ int main(int argc,char** argv) {
         if(camera_cut && completed==change_frame) renderer.reset_history();
         Vec3 eye{10*std::cos(angle)+15*std::sin(angle),4.7f,15*std::cos(angle)-10*std::sin(angle)};
         Vec3 target{0,1,-1};
+        if(surface_gallery) { eye={6.6f,5.6f,9.2f}; target={0,.7f,-.8f}; }
         if(gltf_only) {
           target=(imported.bounds_min+imported.bounds_max)*.5f;
           float radius=asset_fit_radius(imported,width,height);

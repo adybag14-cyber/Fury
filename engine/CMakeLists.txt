@@ -11,6 +11,8 @@ set(FURY_ENGINE_SOURCES
   src/transform.cpp
   src/mesh.cpp
   src/texture.cpp
+  src/surface_detail.cpp
+  src/material_sampling.cpp
   src/gltf.cpp
   src/collision.cpp
   src/camera.cpp

@@ -45,3 +45,41 @@ if(TARGET vaultline)
     ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy;FURY_CPU_THREADS=2;FURY_AUDIO_BACKEND=cpu"
     WORKING_DIRECTORY "$<TARGET_FILE_DIR:vaultline>" TIMEOUT 90)
 endif()
+
+add_executable(fury_surface_detail_tests surface_detail_tests.cpp)
+target_link_libraries(fury_surface_detail_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_surface_detail_tests)
+add_test(NAME surface_detail COMMAND fury_surface_detail_tests)
+
+add_executable(fury_surface_sampling_tests surface_sampling_tests.cpp)
+target_link_libraries(fury_surface_sampling_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_surface_sampling_tests)
+add_test(NAME surface_sampling COMMAND fury_surface_sampling_tests)
+
+add_executable(fury_gl_material_tests gl_material_tests.cpp)
+target_link_libraries(fury_gl_material_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_gl_material_tests)
+find_program(FURY_XVFB_RUN xvfb-run)
+if(UNIX AND FURY_XVFB_RUN)
+  add_test(NAME gl_materials COMMAND ${FURY_XVFB_RUN} -a $<TARGET_FILE:fury_gl_material_tests>)
+else()
+  add_test(NAME gl_materials COMMAND fury_gl_material_tests)
+endif()
+set_tests_properties(gl_materials PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
+
+add_executable(fury_hero_surface_tests hero_surface_tests.cpp
+  ../apps/vaultline/harbor_assets.cpp ../apps/renderlab/coastal_scene.cpp)
+target_link_libraries(fury_hero_surface_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_hero_surface_tests)
+add_test(NAME hero_surfaces COMMAND fury_hero_surface_tests)
+set_tests_properties(hero_surfaces PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME dxr_planar_footprint COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/dxr_planar_footprint_tests.py)
+endif()
+
+add_executable(fury_surface_attachment_tests surface_attachment_tests.cpp)
+target_link_libraries(fury_surface_attachment_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_surface_attachment_tests)
+add_test(NAME surface_attachment COMMAND fury_surface_attachment_tests)

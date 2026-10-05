@@ -4,6 +4,7 @@
 #include "fury/mesh.hpp"
 #include "fury/render_settings.hpp"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -161,6 +162,9 @@ class Renderer {
   std::unique_ptr<IRenderBackend> m_backend;
   Lighting m_lighting{};
   int m_msaa_samples{0};
+  bool m_surface_detail{true};
+  unsigned m_surface_detail_resolution{512};
+  std::array<std::shared_ptr<const MaterialTextures>, static_cast<std::size_t>(TextureSlot::Count)*4> m_surface_maps{};
 };
 
 std::unique_ptr<IRenderBackend> create_gl_backend();

@@ -2,6 +2,18 @@
 
 ## 5.7.0 — portable CPU rendering and audio
 
+### Runtime art and material follow-up
+
+- Six original 512px tileable PBR detail sets with correlated normals/roughness,
+  physical units, filtered mips and bounded caches
+- Selective storefront/bank/bench/cabin finishes, continuous wood grain with
+  orientation-correct runtime UVs, original geometry/colliders/source assets retained
+- Actual GL material maps, alpha-aware shadows, owned sorted transparency and
+  cache/lifetime pixel tests; DXR glass-exit and planar grazing-footprint fixes
+- Fifteen test suites and shader compilation, plus matched real-game/gallery
+  captures, paired CPU/OpenGL timings and explicit backend/art limitations
+
+
 - Add CPU BVH ray/path tracing with instancing, shadows, reflection/refraction,
   progressive accumulation, deterministic worker-independent sampling and telemetry
 - Replace vertex-shaded software fallback with clipped per-pixel PBR rasterization,

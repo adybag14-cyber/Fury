@@ -1,9 +1,12 @@
 #include "harbor_assets.hpp"
+#include "fury/surface_detail.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
+#include <string_view>
 #include <unordered_map>
 
 namespace harbor {
@@ -13,7 +16,77 @@ using fury::Entity;
 using fury::Log;
 using fury::Material;
 using fury::Mesh;
+using fury::TextureSlot;
 using fury::Vec3;
+
+bool begins(std::string_view text, std::string_view prefix) {
+  return text.substr(0, prefix.size()) == prefix;
+}
+bool ends(std::string_view text, std::string_view suffix) {
+  return text.size() >= suffix.size() &&
+         text.substr(text.size() - suffix.size()) == suffix;
+}
+bool begins_any(std::string_view text,
+                std::initializer_list<std::string_view> prefixes) {
+  for (auto prefix : prefixes) if (begins(text, prefix)) return true;
+  return false;
+}
+
+TextureSlot hero_profile(std::string_view asset, std::string_view name) {
+  // Explicit source-name allowlists, checked against the shipped GLBs. Do not
+  // infer surfaces from color/metallicity: decals and branding share factors.
+  if (asset == "storefront" && begins(name, "hm_storefront_v10_")) {
+    const auto part = name.substr(std::strlen("hm_storefront_v10_"));
+    if (part == "shell" || begins_any(part, {"lpier_", "rpier_"}))
+      return TextureSlot::Brick;
+    if (part == "fdoor") return TextureSlot::Wood;
+    const bool window = begins_any(part, {"fshop_", "fuw_", "rshop_", "ruw_", "lw_", "rw_"});
+    if ((window && (ends(part, "_sill") || ends(part, "_lint"))) ||
+        begins_any(part, {"c0_belt_", "c1_belt_", "fpil_", "fpilcap_", "fjamb_", "rpad_", "cap_"}) ||
+        (begins(part, "corn_") && (ends(part, "_0") || ends(part, "_2") || ends(part, "_4"))) ||
+        part == "fdoor_head" || part == "roof" || part == "frecess")
+      return TextureSlot::Concrete;
+    if ((window && (ends(part, "_frm") || ends(part, "_vm") || ends(part, "_hm"))) ||
+        part == "alley_door" || part == "alley_frm" ||
+        begins_any(part, {"arm_", "ladder_", "lrail_", "par_par_"}))
+      return TextureSlot::BarrelMetal;
+    if (part == "fhandle" || part == "pushplate" || part == "kick" ||
+        part == "gutter" || part == "duct" ||
+        begins_any(part, {"par_flash_", "hvac_", "stack_", "rpipe_", "down_", "shoe_", "rvent_", "rventcap_"}))
+      return TextureSlot::Metal;
+  } else if (asset == "bank_vault_door") {
+    if (name == "VD_Door" || name == "VD_DoorEdge" || name == "VD_Threshold" ||
+        name == "VD_WheelHub" || name == "VD_WheelMount" || name == "VD_WheelRim" ||
+        begins_any(name, {"VD_FaceRing_", "VD_WheelArm_", "VD_HingePlate_", "VD_InnerSteel"}))
+      return TextureSlot::Metal;
+  } else if (asset == "bank_deposit_boxes") {
+    if (name == "DB_Frame" || begins_any(name, {"DB_Door_", "DB_Div_", "DB_Rail_", "DB_Hinge_"}))
+      return TextureSlot::Metal;
+  } else if (asset == "bank_teller_counter") {
+    if (name == "TC_Kick" || name == "TC_TrimB" || name == "TC_TrimF" ||
+        name == "TC_GTop" || begins_any(name, {"TC_GPost_", "TC_Tray_", "TC_Handle_"}))
+      return TextureSlot::Metal;
+  } else if (asset == "bank_security_desk") {
+    if (name == "SD_Top" || name == "SD_Riser" || begins_any(name, {"SD_TVent_", "SD_PedH_"}))
+      return TextureSlot::Metal;
+  } else if (asset == "bank_trim_kit") {
+    if (name == "TR_Wainscot") return TextureSlot::Concrete;
+    if (name == "TR_Baseboard" || name == "TR_Corner" || name == "TR_Cove")
+      return TextureSlot::Metal;
+  } else if (asset == "bank_interior_kit") {
+    if (name == "KIT_WallBack" || name == "KIT_WallL" || name == "KIT_WallR")
+      return TextureSlot::Concrete;
+    if (name == "KIT_Ceil" || begins_any(name, {"KIT_BB_", "KIT_CeilAccess_", "KIT_Vent_", "KIT_VentSlat_"}))
+      return TextureSlot::Metal;
+  } else if (asset == "prop_bench") {
+    if (begins_any(name, {"Bench_Seat_", "Bench_Back_"})) return TextureSlot::Wood;
+    if (begins(name, "Bench_Leg_")) return TextureSlot::Concrete;
+    if (name == "Bench_Rail" || name == "Bench_SeatRail" ||
+        begins_any(name, {"Bench_Arm_", "Bench_ArmPost_", "Bench_EndCap_"}))
+      return TextureSlot::BarrelMetal;
+  }
+  return TextureSlot::None;
+}
 
 const HarborAssetDesc kAssets[] = {
     {"bank_interior_kit", "harbor_metro/hm_bank_interior_kit_v2.glb", nullptr,
@@ -122,6 +195,8 @@ bool same_material(const Material& a, const Material& b) {
          a.emissive_color.y == b.emissive_color.y &&
          a.emissive_color.z == b.emissive_color.z &&
          a.texture == b.texture && a.textures == b.textures &&
+         a.detail_texture == b.detail_texture && a.world_uv_scale == b.world_uv_scale &&
+         a.detail_rotation == b.detail_rotation && a.detail_use_mesh_uvs == b.detail_use_mesh_uvs &&
          a.uv_scroll_u == b.uv_scroll_u && a.uv_scroll_v == b.uv_scroll_v &&
          a.wetness == b.wetness && a.transmission == b.transmission &&
          a.index_of_refraction == b.index_of_refraction &&
@@ -131,7 +206,7 @@ bool same_material(const Material& a, const Material& b) {
 }
 
 void append_baked(Mesh& out, const fury::GltfPrimitive& prim,
-                  bool bake_albedo = false) {
+                  bool bake_albedo = false, float longitudinal_uv_scale = 0.f) {
   const auto base = static_cast<std::uint32_t>(out.vertices.size());
   fury::Mat4 inverse_world;
   const fury::Mat4 normal_matrix = fury::inverse(prim.transform, inverse_world)
@@ -141,7 +216,12 @@ void append_baked(Mesh& out, const fury::GltfPrimitive& prim,
   const Vec3 y{m.m[4], m.m[5], m.m[6]};
   const Vec3 z{m.m[8], m.m[9], m.m[10]};
   const bool mirrored = fury::dot(x, fury::cross(y, z)) < 0.f;
-  out.vertices.reserve(out.vertices.size() + prim.mesh->vertices.size());
+  // Bench slats need an asset-local grain direction that follows each bench's
+  // eventual yaw. Bake only their image-free runtime copies; source UVs/maps
+  // remain untouched. Face-local seams duplicate corners without moving them.
+  std::vector<fury::Vertex> longitudinal_vertices;
+  auto& vertices = longitudinal_uv_scale > 0.f ? longitudinal_vertices : out.vertices;
+  vertices.reserve(vertices.size() + prim.mesh->vertices.size());
   for (const auto& v : prim.mesh->vertices) {
     fury::Vertex nv = v;
     nv.position = fury::transform_point(prim.transform, v.position);
@@ -151,12 +231,33 @@ void append_baked(Mesh& out, const fury::GltfPrimitive& prim,
       nv.color.y *= prim.material.albedo.y;
       nv.color.z *= prim.material.albedo.z;
     }
-    out.vertices.push_back(nv);
+    vertices.push_back(nv);
   }
   for (std::size_t i = 0; i < prim.mesh->indices.size(); i += 3) {
-    out.indices.push_back(base + prim.mesh->indices[i]);
-    out.indices.push_back(base + prim.mesh->indices[i + (mirrored ? 2 : 1)]);
-    out.indices.push_back(base + prim.mesh->indices[i + (mirrored ? 1 : 2)]);
+    const std::uint32_t indices[] = {prim.mesh->indices[i],
+      prim.mesh->indices[i + (mirrored ? 2 : 1)],
+      prim.mesh->indices[i + (mirrored ? 1 : 2)]};
+    if (longitudinal_uv_scale > 0.f) {
+      const auto& a=vertices[indices[0]].position;
+      const Vec3 n=fury::normalize(fury::cross(vertices[indices[1]].position-a,
+                                              vertices[indices[2]].position-a));
+      Vec3 v=Vec3{1,0,0}-n*n.x;
+      // On cut ends, X is nearly normal to the face. Local Y is a stable,
+      // in-plane fallback; unlike dividing by a tiny projection it cannot
+      // collapse the UVs or amplify tiny normal changes along the bevel.
+      if (fury::dot(v,v) < .01f) v=Vec3{0,1,0}-n*n.y;
+      v=fury::normalize(v);
+      const Vec3 u=fury::normalize(fury::cross(v,n));
+      for (auto index:indices) {
+        auto vertex=vertices[index];
+        vertex.uv={fury::dot(vertex.position,u)*longitudinal_uv_scale,
+                   fury::dot(vertex.position,v)*longitudinal_uv_scale};
+        out.indices.push_back(static_cast<std::uint32_t>(out.vertices.size()));
+        out.vertices.push_back(vertex);
+      }
+    } else {
+      for (auto index:indices) out.indices.push_back(base + index);
+    }
   }
 }
 
@@ -264,11 +365,12 @@ HarborPrimSet load_prims_from_desc(fury::Scene& scene,
       if (!name_starts_with(prim.name, keep_name_prefix)) {
         continue;
       }
-      Mesh local;
-      append_baked(local, prim);
       HarborPrimPart part;
+      part.material = hero_surface_material(desc.name, prim.name, prim.material);
+      Mesh local;
+      append_baked(local, prim, false,
+                   part.material.detail_use_mesh_uvs ? part.material.world_uv_scale : 0.f);
       part.mesh = scene.add_mesh(std::move(local));
-      part.material = prim.material;
       set.parts.push_back(std::move(part));
     }
     if (!set.parts.empty()) {
@@ -312,14 +414,16 @@ HarborPrimSet load_mat_groups_from_desc(fury::Scene& scene,
     groups.reserve(64);
     for (const auto& prim : asset.primitives) {
       if (is_helper_prim(prim.name) || !prim.mesh) continue;
+      const auto material = hero_surface_material(desc.name, prim.name, prim.material);
       auto group = std::find_if(groups.begin(), groups.end(), [&](const Acc& acc) {
-        return same_material(acc.material, prim.material);
+        return same_material(acc.material, material);
       });
       if (group == groups.end()) {
-        groups.push_back({{}, prim.material});
+        groups.push_back({{}, material});
         group = groups.end() - 1;
       }
-      append_baked(group->mesh, prim);
+      append_baked(group->mesh, prim, false,
+                   material.detail_use_mesh_uvs ? material.world_uv_scale : 0.f);
     }
     for (auto& group : groups) {
       if (group.mesh.vertices.empty()) continue;
@@ -401,6 +505,37 @@ void place_route_pad(fury::Scene& scene, const char* name, const Vec3& pos,
 }
 
 }  // namespace
+
+Material hero_surface_material(const char* asset_name,
+                               const std::string& primitive_name,
+                               const Material& authored) {
+  Material result = authored;
+  // glTF defaults emissive strength to one with a black emissive factor. Its
+  // non-null texture marker selects independent emission instead of legacy
+  // albedo-based emission, so strength alone cannot identify a glowing part.
+  const bool emits = authored.emissive > 0.f && (!authored.textures ||
+      authored.emissive_color.x > 0.f || authored.emissive_color.y > 0.f ||
+      authored.emissive_color.z > 0.f);
+  // An imported texture marker with no images is eligible. Even one authored
+  // image keeps the complete original set/UVs, including emissive-only maps.
+  if (!asset_name || authored.detail_texture != TextureSlot::None ||
+      authored.detail_rotation != 0 || authored.detail_use_mesh_uvs ||
+      authored.world_uv_scale != 0.f || authored.texture != TextureSlot::None ||
+      emits || authored.transmission > 0.f ||
+      authored.opacity < 1.f || authored.alpha_blend || authored.alpha_cutoff >= 0.f)
+    return result;
+  if (authored.textures && (authored.textures->base_color.valid() ||
+      authored.textures->normal.valid() || authored.textures->metallic_roughness.valid() ||
+      authored.textures->emissive.valid())) return result;
+  const auto profile = hero_profile(asset_name, primitive_name);
+  if (profile != TextureSlot::None) {
+    result.detail_texture = profile;
+    result.world_uv_scale = fury::surface_detail_uv_per_meter(profile);
+    result.detail_use_mesh_uvs = std::strcmp(asset_name, "prop_bench") == 0 &&
+                                profile == TextureSlot::Wood;
+  }
+  return result;
+}
 
 const HarborAssetDesc* find_asset(const char* name) {
   if (!name) {
@@ -632,6 +767,7 @@ bool replace_storefront_shell(fury::Scene& scene, const char* shell_name) {
   std::vector<Group> groups;
   for (auto& p : selected) {
     p.transform=fit*p.transform;
+    p.material=hero_surface_material("storefront", p.name, p.material);
     auto group=std::find_if(groups.begin(),groups.end(),[&](const Group& g) {
       return same_material(g.material,p.material);
     });
@@ -1018,6 +1154,18 @@ void spawn_meridian_block(fury::Scene& scene) {
 
   bool any = false;
   for (const auto& p : places) {
+    if (std::strcmp(p.asset, "prop_bench") == 0) {
+      // Keep the named collision root at exactly the old pose/size. Separate
+      // groups let timber, cast-concrete legs and coated frames shade correctly;
+      // their tiny asset plates and preauthored wear keep their own material.
+      const auto groups = load_harbor_material_groups(scene, p.asset,
+          fury::make_box(p.col, {0.45f, 0.45f, 0.48f}), p.name);
+      place_merged(scene, {}, p.name, p.pos, p.yaw, p.solid, p.col, true);
+      const std::string visual_name = std::string(p.name) + "_Surface";
+      place_prims(scene, groups, visual_name.c_str(), p.pos, p.yaw, true);
+      any = any || groups.from_asset;
+      continue;
+    }
     auto loaded = load_harbor_mesh(
         scene, p.asset,
         fury::make_box(p.solid ? p.col : Vec3{0.5f, 0.5f, 0.5f},
