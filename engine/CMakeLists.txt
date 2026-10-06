@@ -36,6 +36,8 @@ set(FURY_ENGINE_SOURCES
   src/day_night.cpp
   src/npc.cpp
   src/character_model.cpp
+  src/character_profile.cpp
+  src/character_surface.cpp
   src/character_animation.cpp
   src/audio.cpp
   src/audio_mixer.cpp

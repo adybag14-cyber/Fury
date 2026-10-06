@@ -1586,17 +1586,20 @@ class GlBackend final : public IRenderBackend {
     // Validate the full chain before using it; arbitrary imported images get
     // the same CPU mip builder instead of GPU-averaged, unnormalized normals.
     std::vector<const RgbaImage*> levels{&pixels};
+    bool supplied_valid = supplied_mips && !supplied_mips->empty();
     if (supplied_mips) {
       for (const auto& mip : *supplied_mips) {
         const auto* previous = levels.back();
         if (!mip.valid() || (previous->width == 1 && previous->height == 1) ||
             mip.width != (std::max)(1, previous->width/2) ||
-            mip.height != (std::max)(1, previous->height/2)) break;
+            mip.height != (std::max)(1, previous->height/2)) { supplied_valid=false; break; }
         levels.push_back(&mip);
       }
     }
     std::vector<RgbaImage> generated;
-    if (levels.back()->width != 1 || levels.back()->height != 1) {
+    // A valid bounded chain is intentional for material atlases: generating
+    // smaller levels would blend unrelated skin/cloth/metal regions.
+    if (!supplied_valid || levels.size()==1) {
       generated = build_mip_chain(pixels, encoding);
       levels.clear();
       for (const auto& mip : generated) levels.push_back(&mip);

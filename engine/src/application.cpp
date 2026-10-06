@@ -264,8 +264,14 @@ void Application::draw_scene() {
     const GeometryBounds primary = m_visibility_bounds.world_bounds(*e.mesh, model);
     GeometryBounds lod;
     if (e.lod_mesh) lod = m_visibility_bounds.world_bounds(*e.lod_mesh, model);
+    // A character may need its simpler mesh sooner than world props. Keep this
+    // override local to the entity and leave detail-only hiding on the global
+    // threshold; all conservative bounds and shadow-caster rules stay shared.
+    auto entity_visibility = visibility;
+    if (e.lod_mesh && std::isfinite(e.lod_distance) && e.lod_distance > 0.f)
+      entity_visibility.lod_mid_distance = e.lod_distance;
     const auto decision = evaluate_world_visibility(
-        visibility, primary, e.lod_mesh ? &lod : nullptr, e.detail);
+        entity_visibility, primary, e.lod_mesh ? &lod : nullptr, e.detail);
     if (!decision.visible) continue;
 
     DrawItem item;

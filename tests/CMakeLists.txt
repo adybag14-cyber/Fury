@@ -177,3 +177,18 @@ if(Python3_Interpreter_FOUND AND TARGET vaultline)
     --vaultline $<TARGET_FILE:vaultline> --source-root ${CMAKE_SOURCE_DIR})
   set_tests_properties(npc_runtime PROPERTIES TIMEOUT 240 PROCESSORS 2)
 endif()
+
+foreach(test character_surface character_lod)
+  add_executable(fury_${test}_tests ${test}_tests.cpp)
+  target_link_libraries(fury_${test}_tests PRIVATE Fury::Engine)
+  fury_stage_runtime(fury_${test}_tests)
+  add_test(NAME ${test} COMMAND fury_${test}_tests)
+endforeach()
+
+add_executable(fury_character_profile_tests character_profile_tests.cpp)
+target_link_libraries(fury_character_profile_tests PRIVATE Fury::Engine)
+fury_stage_runtime(fury_character_profile_tests)
+add_test(NAME character_profile COMMAND fury_character_profile_tests)
+
+add_test(NAME character_surface_gl COMMAND fury_character_surface_tests --gl)
+set_tests_properties(character_surface_gl PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)

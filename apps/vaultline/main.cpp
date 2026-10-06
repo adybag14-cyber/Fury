@@ -3708,6 +3708,11 @@ int main(int argc, char** argv) {
       net_port = static_cast<std::uint16_t>(std::atoi(a.substr(11).c_str()));
     }
   }
+  bool npc_individual_enabled=true;
+  if(const char* env=std::getenv("FURY_INDIVIDUAL_CHARACTERS")) {
+    if(std::strcmp(env,"0")==0)npc_individual_enabled=false;
+    else if(std::strcmp(env,"1")!=0){fury::Log::error("FURY_INDIVIDUAL_CHARACTERS must be 0 or 1");return EXIT_FAILURE;}
+  }
   bool npc_detail_enabled=true;
   if(const char* env=std::getenv("FURY_NPC_DETAIL")) {
     if(std::strcmp(env,"0")==0) npc_detail_enabled=false;
@@ -3890,7 +3895,7 @@ int main(int argc, char** argv) {
   audio->set_master_volume(vl_settings.master_volume);
 
   fury::NpcSystem npcs;
-  vaultline::NpcPresentation npc_presentation(npc_detail_enabled);
+  vaultline::NpcPresentation npc_presentation(npc_detail_enabled,npc_individual_enabled);
 
   auto spawn_npc = [&](fury::NpcAgent agent, const fury::Vec3& color) {
     fury::Entity e;

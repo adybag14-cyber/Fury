@@ -24,6 +24,10 @@ struct Entity {
   bool detail{false};
   /// Optional simpler proxy (often a box) drawn beyond mid range instead of mesh.
   Mesh* lod_mesh{nullptr};
+  /// Optional nearest-bound LOD switch distance in meters, when lod_mesh exists.
+  /// Nonpositive/nonfinite values inherit the application LOD distance. Does not
+  /// change distance/sector culling, detail-only hiding, or gameplay colliders.
+  float lod_distance{0.f};
 };
 
 class Scene {

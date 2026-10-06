@@ -44,6 +44,11 @@ if(FURY_BUILD_RENDERLAB)
   add_subdirectory(apps/renderlab)
 endif()
 
+option(FURY_BUILD_CHARACTERLAB "Build the character diagnostic rendering stage" ON)
+if(FURY_BUILD_CHARACTERLAB)
+  add_subdirectory(apps/characterlab)
+endif()
+
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
