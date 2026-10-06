@@ -50,3 +50,6 @@ vaultline_export.json
 vaultline_replay.json
 vaultline_shot_*.ppm
 vaultline_shot_*.png
+
+# Python validation helpers
+__pycache__/

@@ -111,13 +111,14 @@ bool read_file_bytes(const std::string& path, std::vector<std::uint8_t>& out) {
   }
   in.seekg(0, std::ios::end);
   const auto len = in.tellg();
-  if (len <= 0) {
+  if (len <= 0 || len > 256 * 1024 * 1024) {
     return false;
   }
   in.seekg(0, std::ios::beg);
   out.resize(static_cast<std::size_t>(len));
   in.read(reinterpret_cast<char*>(out.data()), len);
-  return static_cast<bool>(in) || in.eof();
+  if (!in) { out.clear(); return false; }
+  return true;
 }
 
 // Skip PPM whitespace / comments (#...).
@@ -145,52 +146,36 @@ bool ppm_skip(std::istream& in) {
 bool load_ppm(const std::string& path, Image& out) {
   out = Image{};
   std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    return false;
-  }
+  if (!in) return false;
   std::string magic;
-  if (!(in >> magic)) {
-    return false;
-  }
-  if (magic != "P6" && magic != "P3") {
-    return false;
-  }
-  ppm_skip(in);
+  if (!(in >> magic) || (magic != "P6" && magic != "P3")) return false;
+  auto integer = [&](int& value) { return ppm_skip(in) && bool(in >> value); };
   int w = 0, h = 0, maxv = 0;
-  if (!(in >> w >> h)) {
+  if (!integer(w) || !integer(h) || !integer(maxv) ||
+      w <= 0 || h <= 0 || w > 8192 || h > 8192 || maxv <= 0 || maxv > 255)
     return false;
-  }
-  ppm_skip(in);
-  if (!(in >> maxv) || w <= 0 || h <= 0 || maxv <= 0 || maxv > 255) {
-    return false;
-  }
-  // Consume single whitespace after maxval before binary payload.
+  // Binary data may itself begin with whitespace or '#'. Consume exactly the
+  // required header separator instead of skipping bytes from the image.
   const int ws = in.get();
-  if (ws == EOF) {
-    return false;
-  }
-  const std::size_t n = static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 3u;
-  out.width = w;
-  out.height = h;
-  out.rgb.resize(n);
+  if (ws == EOF || !std::isspace(static_cast<unsigned char>(ws))) return false;
+  const std::size_t n = std::size_t(w) * std::size_t(h) * 3;
+  Image result;
+  result.width = w; result.height = h; result.rgb.resize(n);
   if (magic == "P6") {
-    in.read(reinterpret_cast<char*>(out.rgb.data()),
-            static_cast<std::streamsize>(n));
-    if (!in) {
-      out = Image{};
-      return false;
+    if (!in.read(reinterpret_cast<char*>(result.rgb.data()), std::streamsize(n))) return false;
+    for (auto& v : result.rgb) {
+      if (v > maxv) return false;
+      // P6 maxval is not always 255; match the P3 interpretation.
+      v = static_cast<std::uint8_t>((unsigned(v) * 255 + maxv / 2) / maxv);
     }
   } else {
-    for (std::size_t i = 0; i < n; ++i) {
-      int v = 0;
-      if (!(in >> v)) {
-        out = Image{};
-        return false;
-      }
-      out.rgb[i] = static_cast<std::uint8_t>(
-          (std::max)(0, (std::min)(255, v * 255 / maxv)));
+    for (auto& channel : result.rgb) {
+      int value = 0;
+      if (!integer(value) || value < 0 || value > maxv) return false;
+      channel = static_cast<std::uint8_t>((value * 255 + maxv / 2) / maxv);
     }
   }
+  out = std::move(result);
   return true;
 }
 
@@ -201,6 +186,9 @@ bool load_stb_image(const std::string& path, Image& out) {
     return false;
   }
   int w = 0, h = 0, comp = 0;
+  if (file.size() > std::size_t((std::numeric_limits<int>::max)()) ||
+      !stbi_info_from_memory(file.data(), static_cast<int>(file.size()), &w, &h, &comp) ||
+      w <= 0 || h <= 0 || w > 8192 || h > 8192) return false;
   stbi_uc* data = stbi_load_from_memory(file.data(), static_cast<int>(file.size()),
                                         &w, &h, &comp, 3);
   if (!data || w <= 0 || h <= 0) {
@@ -548,8 +536,8 @@ bool resolve_normal_pixels(TextureSlot slot, int procedural_size, Image& out) {
 }
 
 Vec3 sample_image(const Image& img, float u, float v) {
-  if (img.width <= 0 || img.height <= 0 ||
-      img.rgb.size() < static_cast<std::size_t>(img.width * img.height * 3)) {
+  if (img.width <= 0 || img.height <= 0 || !std::isfinite(u) || !std::isfinite(v) ||
+      img.rgb.size() < std::size_t(img.width) * std::size_t(img.height) * 3) {
     return Vec3{1.f, 1.f, 1.f};
   }
   // Repeat wrap

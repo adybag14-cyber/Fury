@@ -43,6 +43,15 @@ struct Material {
   /// Self-illumination strength (lamp heads, neon signs). Added after lighting.
   float emissive{0.f};
   TextureSlot texture{TextureSlot::None};
+  /// Optional original surface-detail profile for an authored material. The
+  /// source maps/factors remain untouched when detail is disabled.
+  TextureSlot detail_texture{TextureSlot::None};
+  /// Clockwise quarter-turns of a generated detail map (including its normals).
+  std::uint8_t detail_rotation{0};
+  /// Use deliberately authored/runtime-baked UV0 rather than automatic world projection.
+  bool detail_use_mesh_uvs{false};
+  /// Positive values select world-planar projection in tiles/metre. Zero uses UV0.
+  float world_uv_scale{0.f};
   /// UV scroll speed (units/sec) — used for water / animated surfaces.
   float uv_scroll_u{0.f};
   float uv_scroll_v{0.f};

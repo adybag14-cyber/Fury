@@ -7,6 +7,8 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <array>
+#include <unordered_map>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -21,6 +23,7 @@ layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec3 aColor;
 layout(location = 3) in vec2 aUV;
+layout(location = 4) in float aOpacity;
 
 uniform mat4 uModel;
 uniform mat4 uView;
@@ -35,14 +38,16 @@ out vec3 vNormal;
 out vec3 vColor;
 out vec2 vUV;
 out vec2 vUVBase;
+out float vOpacity;
 out vec4 vLightSpace0;
 out vec4 vLightSpace1;
 
 void main() {
   vec4 world = uModel * vec4(aPos, 1.0);
   vWorldPos = world.xyz;
-  vNormal = mat3(uModel) * aNormal;
+  vNormal = transpose(inverse(mat3(uModel))) * aNormal;
   vColor = aColor;
+  vOpacity = aOpacity;
   vUVBase = aUV;
   vUV = aUV + uUvScroll * uTime;
   vLightSpace0 = uLightVP0 * world;
@@ -57,6 +62,7 @@ in vec3 vNormal;
 in vec3 vColor;
 in vec2 vUV;
 in vec2 vUVBase;
+in float vOpacity;
 in vec4 vLightSpace0;
 in vec4 vLightSpace1;
 
@@ -75,6 +81,16 @@ uniform float uEmissive;
 uniform float uAoStrength;
 uniform sampler2D uAlbedoMap;
 uniform sampler2D uNormalMap;
+uniform sampler2D uSurfaceMap;
+uniform sampler2D uEmissionMap;
+uniform int uIndependentEmission;
+uniform vec3 uEmissiveColor;
+uniform float uNormalScale;
+uniform float uOpacity;
+uniform float uAlphaCutoff;
+uniform int uAlphaBlend;
+uniform float uWorldUvScale;
+uniform vec2 uUvScroll;
 uniform int uUseTexture;
 uniform int uUseNormalMap;
 uniform int uTextureSlot;
@@ -124,43 +140,73 @@ bool inShadowMap(vec4 lightSpace) {
          proj.y >= 0.0 && proj.y <= 1.0;
 }
 
+vec3 safeNormalize(vec3 v) { return v * inversesqrt(max(dot(v, v), 1e-20)); }
+
 void main() {
-  vec3 N = normalize(vNormal);
-  vec3 L = normalize(-uSunDir);
-  vec3 V = normalize(uCameraPos - vWorldPos);
-  vec3 H = normalize(L + V);
-
-  vec3 base = vColor * uAlbedo;
-  if (uUseTexture != 0) {
-    base *= texture(uAlbedoMap, vUV).rgb;
-  }
-
-  // 5.3.0 — normal map on unit 3; TBN from screen-space derivatives (mesh approx fallback).
-  if (uUseNormalMap != 0) {
-    vec3 mapN = texture(uNormalMap, vUV).xyz * 2.0 - 1.0;
-    vec3 dp1 = dFdx(vWorldPos);
-    vec3 dp2 = dFdy(vWorldPos);
-    vec2 duv1 = dFdx(vUV);
-    vec2 duv2 = dFdy(vUV);
-    vec3 dp2perp = cross(dp2, N);
-    vec3 dp1perp = cross(N, dp1);
-    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
-    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-    float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
-    if (dot(T, T) > 1e-8 && dot(B, B) > 1e-8) {
-      N = normalize(mat3(T * invmax, B * invmax, N) * mapN);
+  vec3 geometric = safeNormalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
+  vec3 N = safeNormalize(vNormal);
+  if (dot(N, N) < 0.5) N = geometric;
+  if (!gl_FrontFacing) N = -N;
+  vec3 L = safeNormalize(-uSunDir);
+  vec3 V = safeNormalize(uCameraPos - vWorldPos);
+  vec3 H = safeNormalize(L + V);
+  vec2 uv = vUV;
+  vec3 projectedT = vec3(1, 0, 0), projectedB = vec3(0, 0, 1);
+  if (uWorldUvScale > 0.0) {
+    // Match CPU/DXR projection, including tie breaks and negative coordinates.
+    vec3 axis = abs(geometric);
+    if (axis.y >= axis.x && axis.y >= axis.z) {
+      uv = vWorldPos.xz;
+    } else if (axis.z >= axis.x) {
+      uv = vec2(vWorldPos.x, -vWorldPos.y);
+      projectedB = vec3(0, -1, 0);
     } else {
-      // Mesh-normal axis approx when derivatives degenerate
-      vec3 Ta = normalize(abs(N.x) > 0.7 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0));
-      Ta = normalize(Ta - N * dot(N, Ta));
-      vec3 Ba = cross(N, Ta);
-      N = normalize(mat3(Ta, Ba, N) * mapN);
+      uv = vec2(vWorldPos.z, -vWorldPos.y);
+      projectedT = vec3(0, 0, 1); projectedB = vec3(0, -1, 0);
     }
-    H = normalize(L + V);
+    uv = uv * uWorldUvScale + uUvScroll * uTime;
   }
 
-  // Water: wave normal scroll, refraction tint, simple shore foam (soft/llvmpipe safe).
-  if (uTextureSlot == 4) {
+  vec4 baseSample = uUseTexture != 0 ? texture(uAlbedoMap, uv) : vec4(1);
+  float alpha = clamp(baseSample.a * uOpacity * vOpacity, 0.0, 1.0);
+  if ((uAlphaCutoff >= 0.0 && alpha < uAlphaCutoff) ||
+      (uAlphaBlend != 0 && alpha <= 0.0)) discard;
+  vec3 base = vColor * uAlbedo * baseSample.rgb;
+  vec4 surface = texture(uSurfaceMap, uv); // glTF G=roughness, B=metallic, linear
+  float roughness = clamp(uRoughness * surface.g, 0.04, 1.0);
+  float metallic = clamp(uMetallic * surface.b, 0.0, 1.0);
+
+  if (uUseNormalMap != 0) {
+    vec3 mapN = texture(uNormalMap, uv).xyz * 2.0 - 1.0;
+    mapN.xy *= uNormalScale;
+    vec3 T = projectedT, B = projectedB;
+    if (uWorldUvScale <= 0.0) {
+      vec3 dp1 = dFdx(vWorldPos), dp2 = dFdy(vWorldPos);
+      vec2 duv1 = dFdx(uv), duv2 = dFdy(uv);
+      float det = duv1.x * duv2.y - duv1.y * duv2.x;
+      if (abs(det) > 1e-10) {
+        T = (dp1 * duv2.y - dp2 * duv1.y) / det;
+        B = (dp2 * duv1.x - dp1 * duv2.x) / det;
+      } else {
+        T = abs(N.x) > 0.7 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+        B = cross(N, T);
+      }
+    }
+    T -= N * dot(N, T);
+    if (dot(T, T) < 1e-12) T = cross(B, N);
+    if (dot(T, T) < 1e-12)
+      T = cross(abs(N.y) < 0.95 ? vec3(0, 1, 0) : vec3(1, 0, 0), N);
+    T = safeNormalize(T);
+    vec3 bitangent = safeNormalize(cross(N, T));
+    if (dot(bitangent, B) < 0.0) bitangent = -bitangent;
+    vec3 mapped = safeNormalize(T * mapN.x + bitangent * mapN.y + N * mapN.z);
+    if (dot(mapped, N) > 0.0) N = mapped;
+  }
+
+  // Legacy water only: authored normal maps already describe their waves.
+  // In particular UV0 may tile many times; its edges are not physical shores.
+  // Keep the separate Water-slot reflection path below for both kinds.
+  if (uTextureSlot == 4 && uUseNormalMap == 0) {
     vec2 wuv = vUV;
     float w1 = sin(wuv.x * 14.0 + uTime * 1.6) * cos(wuv.y * 11.0 + uTime * 1.15);
     float w2 = sin(wuv.x * 6.5 - uTime * 0.95 + wuv.y * 8.0);
@@ -185,9 +231,9 @@ void main() {
   float NdotL = max(dot(N, L), 0.0);
   float diff = NdotL;
 
-  float shininess = mix(128.0, 4.0, clamp(uRoughness, 0.04, 1.0));
+  float shininess = mix(128.0, 4.0, clamp(roughness, 0.04, 1.0));
   float NdotH = max(dot(N, H), 0.0);
-  float spec = pow(NdotH, shininess) * (1.0 - uRoughness * 0.85);
+  float spec = pow(NdotH, shininess) * (1.0 - roughness * 0.85);
 
   // Anisotropic-ish specular hack for wet asphalt (stretch along road tangent).
   float wet = clamp(uWetness, 0.0, 1.0);
@@ -198,12 +244,12 @@ void main() {
     float TdotH = dot(T, H);
     float aniso = pow(max(1.0 - TdotH * TdotH, 0.0), mix(8.0, 48.0, wet));
     float iso = pow(NdotH, shininess);
-    spec = mix(iso, mix(iso, aniso, 0.72), wet) * (1.0 - uRoughness * 0.7);
+    spec = mix(iso, mix(iso, aniso, 0.72), wet) * (1.0 - roughness * 0.7);
     spec *= (1.0 + 1.4 * wet);
   }
 
-  vec3 specCol = mix(vec3(0.04), base, clamp(uMetallic, 0.0, 1.0));
-  float metalDiff = 1.0 - uMetallic * 0.9;
+  vec3 specCol = mix(vec3(0.04), base, metallic);
+  float metalDiff = 1.0 - metallic * 0.9;
 
   // Glass: softer fresnel edge tint
   if (uTextureSlot == 7) {
@@ -231,9 +277,12 @@ void main() {
     shadow = mix(1.0, shadow, clamp(uShadowStrength, 0.0, 1.0));
   }
 
+  // Imported emission is independent of base color; legacy lights stay tinted.
+  vec3 emission = uEmissiveColor * max(uEmissive, 0.0) * texture(uEmissionMap, uv).rgb;
+  if (uIndependentEmission == 0) emission *= base;
   vec3 lit = uAmbient * base * ao
            + uSunColor * uSunIntensity * (base * diff * metalDiff + specCol * spec) * ao * shadow
-           + base * uEmissive;
+           + emission;
 
   // Dynamic point lights (street lamps) — up to 4 nearest.
   int pc = clamp(uPointCount, 0, 4);
@@ -247,7 +296,7 @@ void main() {
     vec3 Lp = toL / max(distL, 0.001);
     float nd = max(dot(N, Lp), 0.0);
     vec3 Hp = normalize(Lp + V);
-    float sp = pow(max(dot(N, Hp), 0.0), shininess) * (1.0 - uRoughness * 0.85);
+    float sp = pow(max(dot(N, Hp), 0.0), shininess) * (1.0 - roughness * 0.85);
     if (uTextureSlot == 2 && wet > 0.01) {
       vec3 T = normalize(abs(N.x) > 0.7 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0));
       T = normalize(T - N * dot(N, T));
@@ -276,9 +325,9 @@ void main() {
 
   // Bloom-lite — bright-pass add for emissives (cheap; no fullscreen blur).
   if (uBloomEnabled != 0 && uEmissive > 0.05) {
-    float bright = max(max(base.r, base.g), base.b) * uEmissive;
+    float bright = max(max(emission.r, emission.g), emission.b);
     float pass = max(bright - 0.55, 0.0);
-    lit += base * (pass * pass) * (1.2 + uEmissive) * clamp(uBloomStrength, 0.0, 1.5);
+    lit += emission / max(uEmissive, 0.001) * (pass * pass) * (1.2 + uEmissive) * clamp(uBloomStrength, 0.0, 1.5);
   }
 
   float dist = length(uCameraPos - vWorldPos);
@@ -289,7 +338,7 @@ void main() {
   color = color / (color + vec3(1.0));
   color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
 
-  FragColor = vec4(color, 1.0);
+  FragColor = vec4(color, uAlphaBlend != 0 ? alpha : 1.0);
 }
 )";
 
@@ -303,16 +352,42 @@ void main() {
 
 const char* kShadowVertSrc = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
+layout(location = 3) in vec2 aUV;
+layout(location = 4) in float aOpacity;
 uniform mat4 uModel;
 uniform mat4 uLightVP;
+out vec3 vWorldPos;
+out vec2 vUV;
+out float vOpacity;
 void main() {
-  gl_Position = uLightVP * uModel * vec4(aPos, 1.0);
+  vec4 world = uModel * vec4(aPos, 1.0);
+  vWorldPos = world.xyz; vUV = aUV; vOpacity = aOpacity;
+  gl_Position = uLightVP * world;
 }
 )";
 
 const char* kShadowFragSrc = R"(#version 330 core
+in vec3 vWorldPos;
+in vec2 vUV;
+in float vOpacity;
+uniform sampler2D uAlbedoMap;
+uniform float uAlphaCutoff;
+uniform float uOpacity;
+uniform float uWorldUvScale;
+uniform vec2 uUvScroll;
+uniform float uTime;
 void main() {
-  // depth-only
+  if (uAlphaCutoff < 0.0) return;
+  vec2 uv = vUV;
+  if (uWorldUvScale > 0.0) {
+    vec3 axis = abs(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
+    if (axis.y >= axis.x && axis.y >= axis.z) uv = vWorldPos.xz;
+    else if (axis.z >= axis.x) uv = vec2(vWorldPos.x, -vWorldPos.y);
+    else uv = vec2(vWorldPos.z, -vWorldPos.y);
+    uv *= uWorldUvScale;
+  }
+  uv += uUvScroll * uTime;
+  if (texture(uAlbedoMap, uv).a * uOpacity * vOpacity < uAlphaCutoff) discard;
 }
 )";
 
@@ -439,8 +514,13 @@ class GlBackend final : public IRenderBackend {
   }
 
   void destroy() override {
+    m_transparent_draws.clear();
     destroy_shadow_resources();
     destroy_fxaa_resources();
+    for (auto& entry : m_material_cache) delete_material_textures(entry.second);
+    m_material_cache.clear();
+    m_material_cache_bytes = 0;
+    m_material_use_serial = 0;
     if (m_hud_vao) {
       gl::DeleteVertexArrays(1, &m_hud_vao);
       m_hud_vao = 0;
@@ -481,6 +561,8 @@ class GlBackend final : public IRenderBackend {
   }
 
   void begin_frame(const Color& clear) override {
+    // A new frame abandons an unfinished previous frame without replaying it.
+    m_transparent_draws.clear();
     SDL_GL_MakeCurrent(m_window, m_glctx);
     gl::Viewport(0, 0, m_width, m_height);
     if (m_msaa_active) {
@@ -489,10 +571,15 @@ class GlBackend final : public IRenderBackend {
       gl::Disable(gl::GL_MULTISAMPLE);
     }
     gl::Enable(gl::GL_DEPTH_TEST);
+    gl::DepthMask(gl::GL_TRUE_);
     gl::Disable(gl::GL_BLEND);
     gl::ClearColor(clear.r / 255.f, clear.g / 255.f, clear.b / 255.f,
                    clear.a / 255.f);
     gl::Clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
+    upload_frame_uniforms();
+  }
+
+  void upload_frame_uniforms() {
     gl::UseProgram(m_program);
 
     const float sun[3] = {m_lighting.sun_direction.x, m_lighting.sun_direction.y,
@@ -519,6 +606,8 @@ class GlBackend final : public IRenderBackend {
     gl::Uniform1i(m_loc_shadow_map, 1);
     gl::Uniform1i(m_loc_shadow_map1, 2);
     gl::Uniform1i(m_loc_normal_map, 3);
+    gl::Uniform1i(m_loc_surface_map, 4);
+    gl::Uniform1i(m_loc_emission_map, 5);
     const bool shadows_on = m_shadows_ready && m_lighting.enable_shadows && !m_soft_gl;
     gl::Uniform1i(m_loc_shadows_enabled, shadows_on ? 1 : 0);
     gl::Uniform1i(m_loc_shadow_cascades, shadows_on ? m_cascade_count : 0);
@@ -634,6 +723,9 @@ class GlBackend final : public IRenderBackend {
     gl::EnableVertexAttribArray(3);
     gl::VertexAttribPointer(3, 2, gl::GL_FLOAT, gl::GL_FALSE_, stride,
                             reinterpret_cast<void*>(offsetof(Vertex, uv)));
+    gl::EnableVertexAttribArray(4);
+    gl::VertexAttribPointer(4, 1, gl::GL_FLOAT, gl::GL_FALSE_, stride,
+                            reinterpret_cast<void*>(offsetof(Vertex, opacity)));
     gl::BindVertexArray(0);
     mesh.gpu_uploaded = true;
     mesh.gpu_dirty = false;
@@ -641,6 +733,56 @@ class GlBackend final : public IRenderBackend {
 
   void draw_mesh(const Mesh& mesh, const Mat4& model,
                  const Material& material) override {
+    if (mesh.indices.empty() || (m_in_shadow_pass && material.alpha_blend)) return;
+    if (material.alpha_blend) {
+      TransparentDraw draw;
+      // Mesh copying clears its external GL handles. Each queued draw owns the
+      // submitted vertices, indices and texture owners, including animated or
+      // temporary meshes that change/disappear before the transparent pass.
+      draw.mesh.reset(new Mesh(mesh));
+      draw.material = material; draw.model = model;
+      draw.view = m_view; draw.proj = m_proj; draw.camera = m_camera_pos;
+      draw.lighting = m_lighting; draw.time = m_time;
+      Vec3 center{};
+      for (const auto& vertex : mesh.vertices) center += vertex.position;
+      if (!mesh.vertices.empty()) center = center * (1.f / float(mesh.vertices.size()));
+      const Vec4 clip = mul(m_proj * m_view * model, Vec4(center, 1));
+      // Depth order follows the actual projection/depth test, including an
+      // orthographic or identity projection whose camera metadata may differ.
+      draw.depth = std::fabs(clip.w) > 1e-8f ? clip.z / clip.w : clip.z;
+      if (!std::isfinite(draw.depth)) draw.depth = 1.f;
+      m_transparent_draws.push_back(std::move(draw));
+      return;
+    }
+    draw_mesh_now(mesh, model, material);
+  }
+
+  void flush_transparent_draws() {
+    if (m_transparent_draws.empty() || m_in_shadow_pass) return;
+    auto draws = std::move(m_transparent_draws);
+    m_transparent_draws.clear();
+    std::stable_sort(draws.begin(), draws.end(), [](const auto& a, const auto& b) {
+      return a.depth > b.depth;
+    });
+    const Mat4 view = m_view, proj = m_proj;
+    const Vec3 camera = m_camera_pos;
+    const Lighting lighting = m_lighting;
+    const float time = m_time;
+    for (auto& draw : draws) {
+      m_view = draw.view; m_proj = draw.proj; m_camera_pos = draw.camera;
+      m_lighting = draw.lighting; m_time = draw.time;
+      upload_frame_uniforms();
+      draw_mesh_now(*draw.mesh, draw.model, draw.material);
+    }
+    m_view = view; m_proj = proj; m_camera_pos = camera;
+    m_lighting = lighting; m_time = time;
+    upload_frame_uniforms();
+    // Owned mesh destructors release temporary VAOs/VBOs/IBOs only after the
+    // submitted GL draws have captured them; GL handles in caller meshes are untouched.
+  }
+
+  void draw_mesh_now(const Mesh& mesh, const Mat4& model,
+                     const Material& material) {
     if (mesh.indices.empty()) {
       return;
     }
@@ -649,9 +791,39 @@ class GlBackend final : public IRenderBackend {
       upload_mesh(mutable_mesh);
     }
 
+    const int slot = static_cast<int>(material.texture);
+    const bool legacy_color = !material.textures && slot > 0 &&
+        slot < static_cast<int>(TextureSlot::Count) && m_textures[std::size_t(slot)] != 0;
+    const bool legacy_normal = legacy_color && texture_slot_has_normal(material.texture) &&
+        m_normal_textures[std::size_t(slot)] != 0;
+    const auto* maps = material.textures ? &material_textures(material.textures) : nullptr;
+    const gl::GLuint color_map = maps ? maps->maps[0] :
+        m_textures[legacy_color ? std::size_t(slot) : 0];
+    const bool use_color = material.textures ? material.textures->base_color.valid() : legacy_color;
+    const bool use_normal = material.textures ? material.textures->normal.valid() : legacy_normal;
+    const float world_scale = std::isfinite(material.world_uv_scale) && material.world_uv_scale > 0.f
+        ? material.world_uv_scale : 0.f;
+    // Match inverse-transpose normals when the model reverses triangle winding.
+    const Vec3 x = transform_direction(model, {1,0,0});
+    const Vec3 y = transform_direction(model, {0,1,0});
+    const Vec3 z = transform_direction(model, {0,0,1});
+    gl::FrontFace(dot(x, cross(y,z)) < 0.f ? gl::GL_CW : gl::GL_CCW);
+    if (material.double_sided) gl::Disable(gl::GL_CULL_FACE);
+    else gl::Enable(gl::GL_CULL_FACE);
+
     if (m_in_shadow_pass) {
-      if (!m_shadow_program) return;
+      // Blended layers need a separate transmissive shadow solution; do not cast
+      // an opaque silhouette. Alpha-mask geometry uses the exact material UVs.
+      if (!m_shadow_program || material.alpha_blend) return;
       gl::UseProgram(m_shadow_program);
+      gl::ActiveTexture(gl::GL_TEXTURE0);
+      gl::BindTexture(gl::GL_TEXTURE_2D, color_map);
+      gl::Uniform1i(m_loc_shadow_albedo_map, 0);
+      gl::Uniform1f(m_loc_shadow_alpha_cutoff, material.alpha_cutoff);
+      gl::Uniform1f(m_loc_shadow_opacity, material.opacity);
+      gl::Uniform1f(m_loc_shadow_world_uv_scale, world_scale);
+      gl::Uniform2f(m_loc_shadow_uv_scroll, material.uv_scroll_u, material.uv_scroll_v);
+      gl::Uniform1f(m_loc_shadow_time, m_time);
       gl::UniformMatrix4fv(m_loc_shadow_model, 1, gl::GL_FALSE_, model.m);
       gl::UniformMatrix4fv(m_loc_shadow_light_vp, 1, gl::GL_FALSE_,
                            m_light_vp_cascades[m_active_cascade].m);
@@ -677,42 +849,45 @@ class GlBackend final : public IRenderBackend {
     gl::Uniform1f(m_loc_roughness, material.roughness);
     gl::Uniform1f(m_loc_emissive, material.emissive);
     gl::Uniform1f(m_loc_wetness, material.wetness);
+    const float emission[3] = {material.emissive_color.x, material.emissive_color.y,
+                               material.emissive_color.z};
+    gl::Uniform3fv(m_loc_emissive_color, 1, emission);
+    gl::Uniform1i(m_loc_independent_emission, material.textures ? 1 : 0);
+    gl::Uniform1f(m_loc_normal_scale, material.normal_scale);
+    gl::Uniform1f(m_loc_opacity, material.opacity);
+    gl::Uniform1f(m_loc_alpha_cutoff, material.alpha_cutoff);
+    gl::Uniform1i(m_loc_alpha_blend, material.alpha_blend ? 1 : 0);
+    gl::Uniform1f(m_loc_world_uv_scale, world_scale);
 
-    const int slot = static_cast<int>(material.texture);
-    const bool use_tex =
-        slot > 0 && slot < static_cast<int>(TextureSlot::Count) &&
-        m_textures[static_cast<std::size_t>(slot)] != 0;
-    gl::Uniform1i(m_loc_use_texture, use_tex ? 1 : 0);
-    gl::Uniform1i(m_loc_texture_slot, use_tex ? slot : 0);
+    gl::Uniform1i(m_loc_use_texture, use_color ? 1 : 0);
+    gl::Uniform1i(m_loc_texture_slot, slot);
+    gl::Uniform1i(m_loc_use_normal_map, use_normal ? 1 : 0);
     gl::ActiveTexture(gl::GL_TEXTURE0);
-    if (use_tex) {
-      gl::BindTexture(gl::GL_TEXTURE_2D,
-                      m_textures[static_cast<std::size_t>(slot)]);
-    } else {
-      gl::BindTexture(gl::GL_TEXTURE_2D, m_textures[0]);
-    }
-
-    // Second texture unit (3) — normal maps for asphalt / brick (shadows use 1–2).
-    const bool use_nmap =
-        texture_slot_has_normal(material.texture) &&
-        slot > 0 && slot < static_cast<int>(TextureSlot::Count) &&
-        !m_normal_textures.empty() &&
-        m_normal_textures[static_cast<std::size_t>(slot)] != 0;
-    gl::Uniform1i(m_loc_use_normal_map, use_nmap ? 1 : 0);
+    gl::BindTexture(gl::GL_TEXTURE_2D, color_map);
     gl::ActiveTexture(gl::GL_TEXTURE3);
-    if (use_nmap) {
-      gl::BindTexture(gl::GL_TEXTURE_2D,
-                      m_normal_textures[static_cast<std::size_t>(slot)]);
-    } else {
-      gl::BindTexture(gl::GL_TEXTURE_2D, m_flat_normal_tex);
-    }
+    gl::BindTexture(gl::GL_TEXTURE_2D, maps ? maps->maps[1] :
+        (legacy_normal ? m_normal_textures[std::size_t(slot)] : m_flat_normal_tex));
+    gl::ActiveTexture(gl::GL_TEXTURE0 + 4);
+    gl::BindTexture(gl::GL_TEXTURE_2D, maps ? maps->maps[2] : m_textures[0]);
+    gl::ActiveTexture(gl::GL_TEXTURE0 + 5);
+    gl::BindTexture(gl::GL_TEXTURE_2D, maps ? maps->maps[3] : m_textures[0]);
     gl::ActiveTexture(gl::GL_TEXTURE0);
+    if (material.alpha_blend) {
+      gl::Enable(gl::GL_BLEND);
+      gl::BlendFunc(gl::GL_SRC_ALPHA, gl::GL_ONE_MINUS_SRC_ALPHA);
+      gl::DepthMask(gl::GL_FALSE_);
+    } else {
+      gl::Disable(gl::GL_BLEND);
+      gl::DepthMask(gl::GL_TRUE_);
+    }
 
     gl::BindVertexArray(mesh.gpu_vao);
     gl::DrawElements(gl::GL_TRIANGLES,
                      static_cast<gl::GLsizei>(mesh.indices.size()),
                      gl::GL_UNSIGNED_INT, nullptr);
     gl::BindVertexArray(0);
+    gl::DepthMask(gl::GL_TRUE_);
+    gl::Disable(gl::GL_BLEND);
   }
 
   void draw_hud_rect(float x, float y, float w, float h,
@@ -720,6 +895,7 @@ class GlBackend final : public IRenderBackend {
     if (w <= 0.f || h <= 0.f || m_width <= 0 || m_height <= 0) {
       return;
     }
+    flush_transparent_draws();
     const float iw = static_cast<float>(m_width);
     const float ih = static_cast<float>(m_height);
     auto to_ndc_x = [&](float px) { return (px / iw) * 2.f - 1.f; };
@@ -735,6 +911,7 @@ class GlBackend final : public IRenderBackend {
     };
 
     gl::Disable(gl::GL_DEPTH_TEST);
+    gl::Disable(gl::GL_CULL_FACE);
     gl::Enable(gl::GL_BLEND);
     gl::BlendFunc(gl::GL_SRC_ALPHA, gl::GL_ONE_MINUS_SRC_ALPHA);
     gl::UseProgram(m_hud_program);
@@ -752,6 +929,7 @@ class GlBackend final : public IRenderBackend {
   }
 
   void end_frame() override {
+    flush_transparent_draws();
     if (m_fxaa_active) {
       run_fxaa_pass();
     }
@@ -764,6 +942,7 @@ class GlBackend final : public IRenderBackend {
       return false;
     }
     SDL_GL_MakeCurrent(m_window, m_glctx);
+    flush_transparent_draws();
     w = m_width;
     h = m_height;
     if (w <= 0 || h <= 0) {
@@ -795,6 +974,7 @@ class GlBackend final : public IRenderBackend {
   }
 
   void resize(int width, int height) override {
+    if (m_glctx) flush_transparent_draws();
     m_width = width;
     m_height = height;
     if (m_glctx) {
@@ -1055,6 +1235,7 @@ class GlBackend final : public IRenderBackend {
     if (w <= 0 || h <= 0) return;
 
     gl::Disable(gl::GL_DEPTH_TEST);
+    gl::Disable(gl::GL_CULL_FACE);
     gl::Disable(gl::GL_BLEND);
     gl::Disable(gl::GL_MULTISAMPLE);
     gl::Viewport(0, 0, w, h);
@@ -1180,6 +1361,12 @@ class GlBackend final : public IRenderBackend {
       return;
     }
     m_loc_shadow_model = gl::GetUniformLocation(m_shadow_program, "uModel");
+    m_loc_shadow_albedo_map = gl::GetUniformLocation(m_shadow_program, "uAlbedoMap");
+    m_loc_shadow_alpha_cutoff = gl::GetUniformLocation(m_shadow_program, "uAlphaCutoff");
+    m_loc_shadow_opacity = gl::GetUniformLocation(m_shadow_program, "uOpacity");
+    m_loc_shadow_world_uv_scale = gl::GetUniformLocation(m_shadow_program, "uWorldUvScale");
+    m_loc_shadow_uv_scroll = gl::GetUniformLocation(m_shadow_program, "uUvScroll");
+    m_loc_shadow_time = gl::GetUniformLocation(m_shadow_program, "uTime");
     m_loc_shadow_light_vp = gl::GetUniformLocation(m_shadow_program, "uLightVP");
 
     for (int c = 0; c < m_cascade_count; ++c) {
@@ -1266,6 +1453,15 @@ class GlBackend final : public IRenderBackend {
     m_loc_uv_scroll = gl::GetUniformLocation(m_program, "uUvScroll");
     m_loc_albedo_map = gl::GetUniformLocation(m_program, "uAlbedoMap");
     m_loc_normal_map = gl::GetUniformLocation(m_program, "uNormalMap");
+    m_loc_surface_map = gl::GetUniformLocation(m_program, "uSurfaceMap");
+    m_loc_emission_map = gl::GetUniformLocation(m_program, "uEmissionMap");
+    m_loc_independent_emission = gl::GetUniformLocation(m_program, "uIndependentEmission");
+    m_loc_emissive_color = gl::GetUniformLocation(m_program, "uEmissiveColor");
+    m_loc_normal_scale = gl::GetUniformLocation(m_program, "uNormalScale");
+    m_loc_opacity = gl::GetUniformLocation(m_program, "uOpacity");
+    m_loc_alpha_cutoff = gl::GetUniformLocation(m_program, "uAlphaCutoff");
+    m_loc_alpha_blend = gl::GetUniformLocation(m_program, "uAlphaBlend");
+    m_loc_world_uv_scale = gl::GetUniformLocation(m_program, "uWorldUvScale");
     m_loc_use_texture = gl::GetUniformLocation(m_program, "uUseTexture");
     m_loc_use_normal_map = gl::GetUniformLocation(m_program, "uUseNormalMap");
     m_loc_texture_slot = gl::GetUniformLocation(m_program, "uTextureSlot");
@@ -1337,86 +1533,163 @@ class GlBackend final : public IRenderBackend {
     return true;
   }
 
+  struct OwnedMeshDeleter {
+    void operator()(Mesh* mesh) const {
+      if (!mesh) return;
+      if (mesh->gpu_vao) gl::DeleteVertexArrays(1, &mesh->gpu_vao);
+      if (mesh->gpu_vbo) gl::DeleteBuffers(1, &mesh->gpu_vbo);
+      if (mesh->gpu_ibo) gl::DeleteBuffers(1, &mesh->gpu_ibo);
+      delete mesh;
+    }
+  };
+  struct TransparentDraw {
+    std::unique_ptr<Mesh, OwnedMeshDeleter> mesh;
+    Material material;
+    Mat4 model, view, proj;
+    Vec3 camera;
+    Lighting lighting;
+    float time{}, depth{};
+  };
+
+  struct CachedMaterial {
+    std::weak_ptr<const MaterialTextures> owner;
+    std::array<gl::GLuint, 4> maps{};
+    std::size_t bytes{};
+    std::uint64_t last_use{};
+  };
+
+  static RgbaImage rgba(const Image& image) {
+    RgbaImage result{image.width, image.height, {}};
+    result.pixels.resize(std::size_t(image.width) * image.height * 4, 255);
+    for (std::size_t i = 0; i < image.rgb.size()/3; ++i)
+      for (std::size_t c = 0; c < 3; ++c) result.pixels[i*4+c] = image.rgb[i*3+c];
+    return result;
+  }
+
+  std::size_t texture_bytes(const RgbaImage& image) const {
+    int w = image.valid() ? image.width : 1, h = image.valid() ? image.height : 1;
+    while (w > m_max_texture_size || h > m_max_texture_size) {
+      w = (std::max)(1, w/2); h = (std::max)(1, h/2);
+    }
+    std::size_t bytes = 0;
+    for (;;) {
+      bytes += std::size_t(w) * h * 4;
+      if (w == 1 && h == 1) return bytes;
+      w = (std::max)(1, w/2); h = (std::max)(1, h/2);
+    }
+  }
+
+  gl::GLuint upload_texture(const RgbaImage& pixels, TextureEncoding encoding,
+                            const std::vector<RgbaImage>* supplied_mips = nullptr) {
+    if (!pixels.valid()) return 0;
+    // The shared generated maps already contain color-correct/normal-safe mips.
+    // Validate the full chain before using it; arbitrary imported images get
+    // the same CPU mip builder instead of GPU-averaged, unnormalized normals.
+    std::vector<const RgbaImage*> levels{&pixels};
+    bool supplied_valid = supplied_mips && !supplied_mips->empty();
+    if (supplied_mips) {
+      for (const auto& mip : *supplied_mips) {
+        const auto* previous = levels.back();
+        if (!mip.valid() || (previous->width == 1 && previous->height == 1) ||
+            mip.width != (std::max)(1, previous->width/2) ||
+            mip.height != (std::max)(1, previous->height/2)) { supplied_valid=false; break; }
+        levels.push_back(&mip);
+      }
+    }
+    std::vector<RgbaImage> generated;
+    // A valid bounded chain is intentional for material atlases: generating
+    // smaller levels would blend unrelated skin/cloth/metal regions.
+    if (!supplied_valid || levels.size()==1) {
+      generated = build_mip_chain(pixels, encoding);
+      levels.clear();
+      for (const auto& mip : generated) levels.push_back(&mip);
+    }
+    gl::GLuint texture = 0;
+    gl::GenTextures(1, &texture);
+    gl::BindTexture(gl::GL_TEXTURE_2D, texture);
+    unsigned first = 0;
+    while (first + 1 < levels.size() &&
+           (levels[first]->width > m_max_texture_size || levels[first]->height > m_max_texture_size)) ++first;
+    for (unsigned i = first; i < levels.size(); ++i) {
+      const auto& image = *levels[i];
+      gl::TexImage2D(gl::GL_TEXTURE_2D, gl::GLint(i-first),
+          encoding == TextureEncoding::SRGB ? gl::GL_SRGB8_ALPHA8 : gl::GL_RGBA8,
+          image.width, image.height, 0, gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, image.pixels.data());
+    }
+    gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAX_LEVEL, gl::GLint(levels.size()-first-1));
+    gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_S, gl::GL_REPEAT);
+    gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_T, gl::GL_REPEAT);
+    gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, gl::GL_LINEAR_MIPMAP_LINEAR);
+    gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, gl::GL_LINEAR);
+    return texture;
+  }
+
+  static void delete_material_textures(CachedMaterial& entry) {
+    gl::DeleteTextures(gl::GLsizei(entry.maps.size()), entry.maps.data());
+  }
+
+  const CachedMaterial& material_textures(const std::shared_ptr<const MaterialTextures>& input) {
+    auto found = m_material_cache.find(input.get());
+    if (found != m_material_cache.end() && !found->second.owner.expired()) {
+      found->second.last_use = ++m_material_use_serial;
+      return found->second;
+    }
+    // Weak ownership prevents the renderer retaining every imported asset.
+    // Delete expired entries before pointer-address reuse can alias an old set.
+    for (auto it = m_material_cache.begin(); it != m_material_cache.end();) {
+      if (it->second.owner.expired()) {
+        m_material_cache_bytes -= it->second.bytes;
+        delete_material_textures(it->second);
+        it = m_material_cache.erase(it);
+      } else ++it;
+    }
+    const RgbaImage* images[] = {&input->base_color, &input->normal,
+                                 &input->metallic_roughness, &input->emissive};
+    const std::vector<RgbaImage>* mips[] = {&input->base_color_mips, &input->normal_mips,
+        &input->metallic_roughness_mips, &input->emissive_mips};
+    std::size_t bytes = 0;
+    for (const auto* image : images) bytes += texture_bytes(*image);
+    constexpr std::size_t budget = 128u * 1024u * 1024u;
+    while (!m_material_cache.empty() &&
+           (m_material_cache.size() >= 64 || m_material_cache_bytes + bytes > budget)) {
+      auto oldest = std::min_element(m_material_cache.begin(), m_material_cache.end(),
+          [](const auto& a, const auto& b) { return a.second.last_use < b.second.last_use; });
+      m_material_cache_bytes -= oldest->second.bytes;
+      delete_material_textures(oldest->second);
+      m_material_cache.erase(oldest);
+    }
+    CachedMaterial entry;
+    entry.owner = input; entry.bytes = bytes; entry.last_use = ++m_material_use_serial;
+    for (unsigned i = 0; i < 4; ++i) {
+      const auto encoding = (i == 0 || i == 3) ? TextureEncoding::SRGB :
+          (i == 1 ? TextureEncoding::Normal : TextureEncoding::Linear);
+      const RgbaImage fallback{1,1,i == 1 ? std::vector<std::uint8_t>{128,128,255,255} :
+          std::vector<std::uint8_t>{255,255,255,255}};
+      entry.maps[i] = upload_texture(images[i]->valid() ? *images[i] : fallback, encoding, mips[i]);
+    }
+    m_material_cache_bytes += bytes;
+    return m_material_cache.emplace(input.get(), std::move(entry)).first->second;
+  }
+
   bool build_textures() {
+    gl::GLint supported_size = 0;
+    gl::GetIntegerv(gl::GL_MAX_TEXTURE_SIZE, &supported_size);
+    // Four complete RGBA mip chains fit in the 128 MiB cache even for one set.
+    m_max_texture_size = (std::max)(1, (std::min)(2048, supported_size));
     m_textures.assign(static_cast<std::size_t>(TextureSlot::Count), 0);
-
-    {
-      const std::uint8_t white[3] = {255, 255, 255};
-      gl::GenTextures(1, &m_textures[0]);
-      gl::BindTexture(gl::GL_TEXTURE_2D, m_textures[0]);
-      gl::TexImage2D(gl::GL_TEXTURE_2D, 0, static_cast<gl::GLint>(gl::GL_RGB), 1,
-                     1, 0, gl::GL_RGB, gl::GL_UNSIGNED_BYTE, white);
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER,
-                        static_cast<gl::GLint>(gl::GL_LINEAR));
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER,
-                        static_cast<gl::GLint>(gl::GL_LINEAR));
-    }
-
-    // 5.2.0+ — file albedo (PNG via STB / PPM) for Wood/BarrelMetal/Asphalt when present
-    const TextureSlot slots[] = {
-        TextureSlot::Checker,     TextureSlot::Asphalt, TextureSlot::Concrete,
-        TextureSlot::Water,       TextureSlot::Brick,   TextureSlot::Metal,
-        TextureSlot::Glass,       TextureSlot::Wood,    TextureSlot::BarrelMetal};
-    constexpr int kSize = 64;
-    for (TextureSlot slot : slots) {
-      const std::size_t idx = static_cast<std::size_t>(slot);
-      Image img;
-      if (!resolve_texture_pixels(slot, kSize, img) || img.rgb.empty()) {
-        continue;
-      }
-      gl::GenTextures(1, &m_textures[idx]);
-      gl::BindTexture(gl::GL_TEXTURE_2D, m_textures[idx]);
-      gl::TexImage2D(gl::GL_TEXTURE_2D, 0, static_cast<gl::GLint>(gl::GL_RGB),
-                     img.width, img.height, 0, gl::GL_RGB, gl::GL_UNSIGNED_BYTE,
-                     img.rgb.data());
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_S,
-                        static_cast<gl::GLint>(gl::GL_REPEAT));
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_T,
-                        static_cast<gl::GLint>(gl::GL_REPEAT));
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER,
-                        static_cast<gl::GLint>(gl::GL_LINEAR_MIPMAP_LINEAR));
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER,
-                        static_cast<gl::GLint>(gl::GL_LINEAR));
-      gl::GenerateMipmap(gl::GL_TEXTURE_2D);
-    }
-
-    // 5.3.0 — second texture unit: normal maps for Asphalt / Brick
     m_normal_textures.assign(static_cast<std::size_t>(TextureSlot::Count), 0);
-    {
-      const std::uint8_t flat_n[3] = {128, 128, 255};
-      gl::GenTextures(1, &m_flat_normal_tex);
-      gl::BindTexture(gl::GL_TEXTURE_2D, m_flat_normal_tex);
-      gl::TexImage2D(gl::GL_TEXTURE_2D, 0, static_cast<gl::GLint>(gl::GL_RGB), 1,
-                     1, 0, gl::GL_RGB, gl::GL_UNSIGNED_BYTE, flat_n);
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER,
-                        static_cast<gl::GLint>(gl::GL_LINEAR));
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER,
-                        static_cast<gl::GLint>(gl::GL_LINEAR));
-    }
-    const TextureSlot nslots[] = {TextureSlot::Asphalt, TextureSlot::Brick};
-    for (TextureSlot slot : nslots) {
-      const std::size_t idx = static_cast<std::size_t>(slot);
-      Image img;
-      if (!resolve_normal_pixels(slot, kSize, img) || img.rgb.empty()) {
-        continue;
-      }
-      gl::GenTextures(1, &m_normal_textures[idx]);
-      gl::BindTexture(gl::GL_TEXTURE_2D, m_normal_textures[idx]);
-      gl::TexImage2D(gl::GL_TEXTURE_2D, 0, static_cast<gl::GLint>(gl::GL_RGB),
-                     img.width, img.height, 0, gl::GL_RGB, gl::GL_UNSIGNED_BYTE,
-                     img.rgb.data());
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_S,
-                        static_cast<gl::GLint>(gl::GL_REPEAT));
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_T,
-                        static_cast<gl::GLint>(gl::GL_REPEAT));
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER,
-                        static_cast<gl::GLint>(gl::GL_LINEAR_MIPMAP_LINEAR));
-      gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER,
-                        static_cast<gl::GLint>(gl::GL_LINEAR));
-      gl::GenerateMipmap(gl::GL_TEXTURE_2D);
+    m_textures[0] = upload_texture({1,1,{255,255,255,255}}, TextureEncoding::SRGB);
+    m_flat_normal_tex = upload_texture({1,1,{128,128,255,255}}, TextureEncoding::Normal);
+    for (int i = 1; i < static_cast<int>(TextureSlot::Count); ++i) {
+      const auto slot = static_cast<TextureSlot>(i);
+      Image pixels;
+      if (resolve_texture_pixels(slot, 64, pixels) && !pixels.rgb.empty())
+        m_textures[std::size_t(i)] = upload_texture(rgba(pixels), TextureEncoding::SRGB);
+      if (texture_slot_has_normal(slot) && resolve_normal_pixels(slot, 64, pixels) && !pixels.rgb.empty())
+        m_normal_textures[std::size_t(i)] = upload_texture(rgba(pixels), TextureEncoding::Normal);
     }
     gl::BindTexture(gl::GL_TEXTURE_2D, 0);
-    return true;
+    return m_textures[0] && m_flat_normal_tex;
   }
 
   static gl::GLuint compile(gl::GLenum type, const char* src) {
@@ -1437,6 +1710,7 @@ class GlBackend final : public IRenderBackend {
     return sh;
   }
 
+  std::vector<TransparentDraw> m_transparent_draws;
   SDL_Window* m_window{nullptr};
   SDL_GLContext m_glctx{nullptr};
   int m_width{0};
@@ -1448,6 +1722,10 @@ class GlBackend final : public IRenderBackend {
   std::vector<gl::GLuint> m_textures;
   std::vector<gl::GLuint> m_normal_textures;
   gl::GLuint m_flat_normal_tex{0};
+  std::unordered_map<const MaterialTextures*, CachedMaterial> m_material_cache;
+  std::size_t m_material_cache_bytes{};
+  std::uint64_t m_material_use_serial{};
+  int m_max_texture_size{2048};
 
   gl::GLint m_loc_model{-1};
   gl::GLint m_loc_view{-1};
@@ -1469,6 +1747,15 @@ class GlBackend final : public IRenderBackend {
   gl::GLint m_loc_uv_scroll{-1};
   gl::GLint m_loc_albedo_map{-1};
   gl::GLint m_loc_normal_map{-1};
+  gl::GLint m_loc_surface_map{-1};
+  gl::GLint m_loc_emission_map{-1};
+  gl::GLint m_loc_independent_emission{-1};
+  gl::GLint m_loc_emissive_color{-1};
+  gl::GLint m_loc_normal_scale{-1};
+  gl::GLint m_loc_opacity{-1};
+  gl::GLint m_loc_alpha_cutoff{-1};
+  gl::GLint m_loc_alpha_blend{-1};
+  gl::GLint m_loc_world_uv_scale{-1};
   gl::GLint m_loc_use_texture{-1};
   gl::GLint m_loc_use_normal_map{-1};
   gl::GLint m_loc_texture_slot{-1};
@@ -1500,6 +1787,12 @@ class GlBackend final : public IRenderBackend {
   gl::GLuint m_shadow_depth_tex[kMaxShadowCascades]{};
   gl::GLuint m_shadow_program{0};
   gl::GLint m_loc_shadow_model{-1};
+  gl::GLint m_loc_shadow_albedo_map{-1};
+  gl::GLint m_loc_shadow_alpha_cutoff{-1};
+  gl::GLint m_loc_shadow_opacity{-1};
+  gl::GLint m_loc_shadow_world_uv_scale{-1};
+  gl::GLint m_loc_shadow_uv_scroll{-1};
+  gl::GLint m_loc_shadow_time{-1};
   gl::GLint m_loc_shadow_light_vp{-1};
   bool m_shadows_ready{false};
   bool m_in_shadow_pass{false};

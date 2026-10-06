@@ -22,6 +22,9 @@ struct RgbaImage {
 };
 struct MaterialTextures {
   RgbaImage base_color,normal,metallic_roughness,emissive;
+  /// Optional additional mip levels (index 0 = half-size level 1). Color mips
+  /// are filtered in linear light; normal mips are renormalized.
+  std::vector<RgbaImage> base_color_mips,normal_mips,metallic_roughness_mips,emissive_mips;
   std::string source;
 };
 enum class TextureEncoding { Linear, SRGB, Normal };

@@ -85,7 +85,8 @@ struct WishlistController {
                          float dt, bool alarm_active);
 
   /// Try badge reader / maintenance panel near player. Returns true if consumed.
-  bool try_security_interact(fury::Scene& scene, const fury::Vec3& player_pos);
+  bool try_security_interact(fury::Scene& scene, fury::SecurityNet& security,
+                             const fury::Vec3& player_pos);
 
   /// Dump frame/entity/memory profile to log (+ optional docs path).
   void dump_profile(fury::Scene& scene, const fury::Renderer& renderer,

@@ -249,6 +249,14 @@ Mesh make_plane(float width, float depth, const Vec3& color, float uv_scale) {
   const float hz = depth * 0.5f;
   push_quad(mesh, {-hx, 0.f, -hz}, {hx, 0.f, -hz}, {hx, 0.f, hz},
             {-hx, 0.f, hz}, {0.f, 1.f, 0.f}, color, uv_scale);
+  // Keep the authored XZ UV orientation but make the front face agree with +Y.
+  // Otherwise single-sided floors disappear and GL double-sided lighting flips
+  // upward shading normals when the player views the plane from above.
+  if(dot(cross(mesh.vertices[1].position-mesh.vertices[0].position,
+               mesh.vertices[2].position-mesh.vertices[0].position),{0,1,0})<0.f) {
+    for(std::size_t i=0;i<mesh.indices.size();i+=3)
+      std::swap(mesh.indices[i+1],mesh.indices[i+2]);
+  }
   return mesh;
 }
 

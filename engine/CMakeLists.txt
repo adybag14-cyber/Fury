@@ -11,6 +11,8 @@ set(FURY_ENGINE_SOURCES
   src/transform.cpp
   src/mesh.cpp
   src/texture.cpp
+  src/surface_detail.cpp
+  src/material_sampling.cpp
   src/gltf.cpp
   src/collision.cpp
   src/camera.cpp
@@ -21,9 +23,11 @@ set(FURY_ENGINE_SOURCES
   src/gl_loader.cpp
   src/gl_backend.cpp
   src/soft_backend.cpp
+  src/cpu_ray_backend.cpp
   src/renderer.cpp
   src/render_settings.cpp
   src/application.cpp
+  src/visibility.cpp
   src/heist.cpp
   src/inventory.cpp
   src/net_loopback.cpp
@@ -31,7 +35,12 @@ set(FURY_ENGINE_SOURCES
   src/decals.cpp
   src/day_night.cpp
   src/npc.cpp
+  src/character_model.cpp
+  src/character_profile.cpp
+  src/character_surface.cpp
+  src/character_animation.cpp
   src/audio.cpp
+  src/audio_mixer.cpp
   src/heat.cpp
   src/pursuit.cpp
   src/traffic.cpp
@@ -59,7 +68,10 @@ set(FURY_ENGINE_HEADERS
   include/fury/net.hpp
   include/fury/day_night.hpp
   include/fury/npc.hpp
+  include/fury/character_model.hpp
+  include/fury/character_animation.hpp
   include/fury/audio.hpp
+  include/fury/audio_mixer.hpp
   include/fury/heat.hpp
   include/fury/pursuit.hpp
   include/fury/traffic.hpp
@@ -155,6 +167,10 @@ if(TARGET SDL2_mixer::SDL2_mixer)
   target_link_libraries(fury_engine PUBLIC SDL2_mixer::SDL2_mixer)
   target_compile_definitions(fury_engine PUBLIC FURY_HAS_SDL_MIXER=1)
   message(STATUS "  SDL_mixer: FOUND")
+elseif(TARGET SDL2_mixer::SDL2_mixer-static)
+  target_link_libraries(fury_engine PUBLIC SDL2_mixer::SDL2_mixer-static)
+  target_compile_definitions(fury_engine PUBLIC FURY_HAS_SDL_MIXER=1)
+  message(STATUS "  SDL_mixer: FOUND (static target)")
 elseif(SDL2_MIXER_FOUND OR SDL2_mixer_FOUND)
   if(SDL2_MIXER_INCLUDE_DIRS)
     target_include_directories(fury_engine PUBLIC ${SDL2_MIXER_INCLUDE_DIRS})
@@ -177,7 +193,7 @@ else()
     message(STATUS "  SDL_mixer: FOUND (pkg-config)")
   else()
     target_compile_definitions(fury_engine PUBLIC FURY_HAS_SDL_MIXER=0)
-    message(STATUS "  SDL_mixer: NOT FOUND (null audio)")
+    message(STATUS "  SDL_mixer: NOT FOUND (built-in CPU audio)")
   endif()
 endif()
 

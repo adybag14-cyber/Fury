@@ -4,6 +4,7 @@
 #include "fury/mesh.hpp"
 #include "fury/render_settings.hpp"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -62,6 +63,7 @@ enum class RenderBackendKind {
   OpenGL,
   Software,
   Direct3D12,
+  CpuRayTracing,
 };
 
 class IRenderBackend {
@@ -160,10 +162,15 @@ class Renderer {
   std::unique_ptr<IRenderBackend> m_backend;
   Lighting m_lighting{};
   int m_msaa_samples{0};
+  bool m_surface_detail{true};
+  unsigned m_surface_detail_resolution{512};
+  std::array<std::shared_ptr<const MaterialTextures>, static_cast<std::size_t>(TextureSlot::Count)*4> m_surface_maps{};
 };
 
 std::unique_ptr<IRenderBackend> create_gl_backend();
 std::unique_ptr<IRenderBackend> create_software_backend();
 std::unique_ptr<IRenderBackend> create_dx12_backend();
+/// Portable CPU BVH ray/path tracer. No GPU or graphics context is required.
+std::unique_ptr<IRenderBackend> create_cpu_ray_backend();
 
 }  // namespace fury

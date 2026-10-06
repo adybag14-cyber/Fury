@@ -1,6 +1,12 @@
 #include <fury/fury.hpp>
 #include "harbor_assets.hpp"
 #include "meridian_wishlist.hpp"
+#include "world_views.hpp"
+#include "world_audit.hpp"
+#include "world_upgrade.hpp"
+#include "npc_roster.hpp"
+#include "npc_presentation.hpp"
+#include "npc_interaction.hpp"
 
 #include <SDL.h>
 
@@ -11,7 +17,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <iomanip>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -2257,6 +2265,7 @@ void build_harbor_metro(fury::Scene& scene) {
     const Vec3 pos{spec.pos.x, spec.size.y * 0.5f, spec.pos.z};
     const std::string bname = "Bldg" + std::to_string(bi++);
     add_solid_box(scene, mesh, bname.c_str(), pos, spec.size, bm);
+    if (bname == "Bldg3" && harbor::replace_storefront_shell(scene, bname.c_str())) continue;
 
     // Night window emissive strips on +Z / +X faces
     const float hy = spec.size.y;
@@ -3403,7 +3412,8 @@ void draw_hud_bars(fury::Renderer& r, const fury::HeistController& heist,
                                Color{220, 255, 230, 240}, 2.f);
       }
       if(i>=10) {
-        const bool available=r.backend_kind()==fury::RenderBackendKind::Direct3D12;
+        const bool available=r.backend_kind()==fury::RenderBackendKind::Direct3D12 ||
+                             (i==10 && r.backend_kind()==fury::RenderBackendKind::CpuRayTracing);
         const char* value="DX12 ONLY";
         if(available) {
           if(i==10) value=vl_set.trace_mode ? "PATH TRACED" : "RAY TRACED";
@@ -3599,7 +3609,13 @@ void draw_hud_bars(fury::Renderer& r, const fury::HeistController& heist,
 }  // namespace
 
 int main(int argc, char** argv) {
-  bool force_soft = false;
+  bool force_soft = false, force_cpu_ray = false, photo_launch=false, no_hud=false;
+  std::string capture_view,npc_capture_id,npc_audit_path,capture_sequence;
+  bool npc_motion=false,npc_talk_capture=false;
+  float capture_fps=60.f,npc_capture_distance=3.2f,npc_capture_orbit=0.f;
+  int render_width=1280,render_height=720;
+  unsigned render_frames=0,cpu_spp=1,cpu_bounces=4;
+  std::string capture_path, world_audit_path;
   bool smoke_mode = false;
   bool profile_mode = false;
   bool cinematic_mode = false;
@@ -3609,6 +3625,66 @@ int main(int argc, char** argv) {
   std::uint16_t net_port = 7777;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i] ? argv[i] : "";
+    if(a=="--npc-view"||a=="--npc-motion"||a=="--npc-audit"||a=="--capture-sequence"||a=="--capture-fps"||a=="--npc-distance"||a=="--npc-orbit") {
+      if(i+1>=argc){fury::Log::error("Missing value for "+a);return EXIT_FAILURE;}
+      const std::string value=argv[++i];
+      if(a=="--npc-view"||a=="--npc-motion") {npc_capture_id=value;npc_motion=a=="--npc-motion";photo_launch=!npc_motion;}
+      else if(a=="--npc-audit") npc_audit_path=value;
+      else if(a=="--capture-sequence") capture_sequence=value;
+      else {
+        char* end{};const float number=std::strtof(value.c_str(),&end);
+        const float minimum=a=="--capture-fps"?4.f:a=="--npc-orbit"?-180.f:.5f;
+        const float maximum=a=="--capture-fps"?120.f:a=="--npc-orbit"?180.f:30.f;
+        if(end==value.c_str()||*end||!std::isfinite(number)||number<minimum||number>maximum){fury::Log::error("Invalid value for "+a);return EXIT_FAILURE;}
+        if(a=="--capture-fps")capture_fps=number;
+        else if(a=="--npc-orbit")npc_capture_orbit=number;
+        else npc_capture_distance=number;
+      }
+      continue;
+    }
+    if(a=="--npc-talk") {npc_talk_capture=true;continue;}
+    if (a == "--world-audit") {
+      if(i+1>=argc) { fury::Log::error("--world-audit needs an output JSON path"); return EXIT_FAILURE; }
+      world_audit_path=argv[++i];
+      continue;
+    }
+    if (a == "--cpu-ray") force_cpu_ray = true;
+    if (a == "--photo") photo_launch=true;
+    if (a == "--no-hud") no_hud=true;
+    if (a == "--view") {
+      if(i+1>=argc) { fury::Log::error(std::string("--view needs ")+vaultline::kWorldCaptureViewNames); return EXIT_FAILURE; }
+      capture_view=argv[++i]; photo_launch=true;
+      if(!vaultline::world_capture_view(capture_view)) { fury::Log::error("Unknown capture view"); return EXIT_FAILURE; }
+    }
+    if (a == "--help") {
+      std::puts("Vaultline: --soft | --cpu-ray; --width 64..7680 --height 64..4320\n"
+                "--frames N --capture image.ppm (deterministic bounded validation)\n"
+                "--world-audit audit.json (build the real world, report preservation/coverage, exit)\n"
+                "--npc-view ID | --npc-motion ID; --npc-distance 0.5..30 --npc-orbit -180..180 --npc-talk --npc-audit out.json\n"
+                "--capture-sequence DIR --capture-fps 4..120 (requires --frames; offline simulation cadence)\n"
+                "--spp 1..64 --bounces 1..16 (CPU ray/path quality) --smoke\n"
+                "--photo (freeze simulation/lighting for convergence); --view NAME --no-hud\n"
+                "FURY_WORLD_ART=0|1 FURY_NPC_DETAIL=0|1 FURY_TRACE_MODE=ray|path FURY_CPU_THREADS=1..64 FURY_AUDIO_BACKEND=cpu|null|mixer");
+      std::printf("Capture views: %s\n", vaultline::kWorldCaptureViewNames);
+      return 0;
+    }
+    if (a == "--width" || a == "--height" || a == "--frames" || a == "--spp" || a == "--bounces" || a == "--capture") {
+      if(i+1>=argc) { fury::Log::error("Missing value for "+a); return EXIT_FAILURE; }
+      const char* value=argv[++i];
+      if(a=="--capture") capture_path=value;
+      else {
+        char* end{}; const long number=std::strtol(value,&end,10);
+        const long maximum=a=="--width" ? 7680 : a=="--height" ? 4320 : a=="--spp" ? 64 : a=="--bounces" ? 16 : 1000000;
+        const long minimum=(a=="--width" || a=="--height") ? 64:1;
+        if(end==value || *end || number<minimum || number>maximum) { fury::Log::error("Invalid value for "+a); return EXIT_FAILURE; }
+        if(a=="--width") render_width=int(number);
+        if(a=="--height") render_height=int(number);
+        if(a=="--frames") render_frames=unsigned(number);
+        if(a=="--spp") cpu_spp=unsigned(number);
+        if(a=="--bounces") cpu_bounces=unsigned(number);
+      }
+      continue;
+    }
     if (a == "--soft" || a == "-soft") force_soft = true;
     if (a == "--smoke" || a == "-smoke") smoke_mode = true;
     if (a == "--profile" || a == "-profile") profile_mode = true;
@@ -3632,6 +3708,27 @@ int main(int argc, char** argv) {
       net_port = static_cast<std::uint16_t>(std::atoi(a.substr(11).c_str()));
     }
   }
+  bool npc_individual_enabled=true;
+  if(const char* env=std::getenv("FURY_INDIVIDUAL_CHARACTERS")) {
+    if(std::strcmp(env,"0")==0)npc_individual_enabled=false;
+    else if(std::strcmp(env,"1")!=0){fury::Log::error("FURY_INDIVIDUAL_CHARACTERS must be 0 or 1");return EXIT_FAILURE;}
+  }
+  bool npc_detail_enabled=true;
+  if(const char* env=std::getenv("FURY_NPC_DETAIL")) {
+    if(std::strcmp(env,"0")==0) npc_detail_enabled=false;
+    else if(std::strcmp(env,"1")!=0) {fury::Log::error("FURY_NPC_DETAIL must be 0 or 1");return EXIT_FAILURE;}
+  }
+  bool world_art_enabled=true;
+  if(const char* env=std::getenv("FURY_WORLD_ART")) {
+    if(std::strcmp(env,"0")==0) world_art_enabled=false;
+    else if(std::strcmp(env,"1")!=0) { fury::Log::error("FURY_WORLD_ART must be 0 or 1");return EXIT_FAILURE; }
+  }
+  if((!capture_sequence.empty()||!npc_capture_id.empty())&&!render_frames) {fury::Log::error("NPC/sequence capture requires --frames");return EXIT_FAILURE;}
+  if(!npc_capture_id.empty()&&(!capture_view.empty()||smoke_mode||heist_capture_mode)) {fury::Log::error("NPC capture cannot combine world view or mission smoke modes");return EXIT_FAILURE;}
+  if(npc_motion&&photo_launch){fury::Log::error("--npc-motion cannot combine --photo/--view");return EXIT_FAILURE;}
+  if(npc_talk_capture&&!npc_motion) {fury::Log::error("--npc-talk requires --npc-motion");return EXIT_FAILURE;}
+  if(force_soft && force_cpu_ray) { fury::Log::error("Choose --soft or --cpu-ray"); return EXIT_FAILURE; }
+  if(!capture_path.empty() && !render_frames) { fury::Log::error("--capture requires --frames"); return EXIT_FAILURE; }
   if (const char* env = std::getenv("FURY_SOFT")) {
     if (env[0] == '1' || env[0] == 't' || env[0] == 'T' || env[0] == 'y' ||
         env[0] == 'Y') {
@@ -3699,17 +3796,24 @@ int main(int argc, char** argv) {
 
   fury::AppConfig config;
   config.window.title = "Fury — Vaultline " FURY_VERSION;
-  config.window.width = 1280;
-  config.window.height = 720;
+  config.window.width = render_width;
+  config.window.height = render_height;
+  config.max_frames=render_frames;
+  config.freeze_render_time=photo_launch;
+  config.show_hud=!no_hud;
+  config.fixed_timestep=render_frames ? 1.f/capture_fps:0.f;
+  config.capture_sequence_directory=capture_sequence;
+  config.capture_path=capture_path;
   config.window.msaa_samples = quality.msaa_samples;  // 5.5.0 SDL_GL_MULTISAMPLE
   config.clear_color = {78, 118, 168, 255};
   config.log_fps = false;  // optional; toggle with P
   config.fps_log_interval = 1.0f;
-  config.prefer_opengl = !force_soft;
+  config.prefer_opengl = !force_soft && !force_cpu_ray;
   if(force_soft) config.preferred_backend=fury::RenderBackendKind::Software;
+  if(force_cpu_ray) config.preferred_backend=fury::RenderBackendKind::CpuRayTracing;
   config.cull_distance = quality.cull_distance;
   config.lod_mid_distance = quality.cull_distance * 0.5f;
-  config.capture_mouse = !smoke_mode;
+  config.capture_mouse = !smoke_mode && npc_capture_id.empty();
   config.enable_collision = true;
   config.player_radius = 0.45f;
 
@@ -3719,6 +3823,14 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
+  if(app.renderer().backend_kind()==fury::RenderBackendKind::CpuRayTracing) {
+    auto rendering=app.renderer().settings();
+    rendering.samples_per_pixel=cpu_spp; rendering.max_bounces=cpu_bounces;
+    if(!std::getenv("FURY_TRACE_MODE")) rendering.trace_mode=static_cast<fury::TraceMode>(vl_settings.trace_mode);
+    vl_settings.trace_mode=int(rendering.trace_mode);
+    if(!app.renderer().configure(rendering)) return EXIT_FAILURE;
+    fury::Log::info("CPU tracing is resolution-dependent; use --width 640 --height 360 for progressive preview");
+  }
   if(app.renderer().backend_kind()==fury::RenderBackendKind::Direct3D12) {
     auto rendering=app.renderer().settings();
     if(std::getenv("FURY_UPSCALER")) vl_settings.upscaler=int(rendering.upscaler);
@@ -3746,6 +3858,15 @@ int main(int argc, char** argv) {
   app.renderer().set_msaa_samples(quality.msaa_samples);
 
   build_harbor_metro(app.scene());
+  const auto world_before=vaultline::snapshot_world(app.scene());
+  const auto world_coverage=vaultline::upgrade_playable_world(app.scene(),world_art_enabled);
+  fury::Log::info(std::string("Whole-world art: ")+(world_art_enabled?"enabled":"baseline"));
+  if(!world_audit_path.empty()) {
+    if(!vaultline::write_world_audit(world_audit_path,app.scene(),world_before,world_art_enabled,world_coverage)) {
+      fury::Log::error("Could not write world audit: "+world_audit_path);return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+  }
 
   const fury::InteriorCatalog interiors = fury::make_harbor_interiors();
   const char* active_interior_tag = "";
@@ -3774,206 +3895,31 @@ int main(int argc, char** argv) {
   audio->set_master_volume(vl_settings.master_volume);
 
   fury::NpcSystem npcs;
+  vaultline::NpcPresentation npc_presentation(npc_detail_enabled,npc_individual_enabled);
 
   auto spawn_npc = [&](fury::NpcAgent agent, const fury::Vec3& color) {
     fury::Entity e;
     e.name = agent.entity_name.empty() ? agent.name : agent.entity_name;
     agent.entity_name = e.name;
     // Unique humanoid mesh per agent so walk poses do not stomp each other.
-    e.mesh = app.scene().add_mesh(
-        fury::make_humanoid(agent.height, color, 0.f));
+    if(!npc_presentation.enabled()) {
+      if(auto* previous=app.scene().find_by_name(e.name)) e.mesh=previous->mesh;
+      if(!e.mesh)e.mesh=app.scene().add_mesh(fury::make_humanoid(agent.height,color,0.f));
+    }
     e.transform.position = agent.position;
     e.material.albedo = color;
     e.material.roughness = 0.65f;
     e.material.metallic = 0.05f;
     e.solid = false;
-    app.scene().add_entity(std::move(e));
+    npc_presentation.install(app.scene(),e,agent.height,
+        vaultline::npc_character_role(e.name,agent.kind),color);
+    if(auto* existing=app.scene().find_by_name(e.name)) *existing=std::move(e);
+    else app.scene().add_entity(std::move(e));
     npcs.add(std::move(agent));
   };
 
-  {
-    fury::NpcAgent a;
-    a.name = "CivA";
-    a.display_name = "Mira Vale";
-    a.entity_name = "NpcCivA";
-    a.kind = fury::NpcKind::Civilian;
-    a.height = 1.75f;
-    a.position = {-12.f, 0.875f, 10.f};
-    a.speed = 2.4f;
-    a.waypoints = {{-12.f, 0.f, 10.f}, {12.f, 0.f, 10.f}, {12.f, 0.f, -18.f},
-                   {-12.f, 0.f, -18.f}};
-    a.schedule = fury::NpcSchedule::Always;  // sparse night presence
-    a.home = {-12.f, 0.f, 10.f};
-    spawn_npc(std::move(a), {0.55f, 0.72f, 0.85f});
-  }
-  {
-    fury::NpcAgent a;
-    a.name = "CivB";
-    a.display_name = "Jon Keel";
-    a.entity_name = "NpcCivB";
-    a.kind = fury::NpcKind::Civilian;
-    a.height = 1.7f;
-    a.position = {18.f, 0.85f, 22.f};
-    a.speed = 2.1f;
-    a.waypoints = {{18.f, 0.f, 22.f}, {34.f, 0.f, 22.f}, {34.f, 0.f, 8.f},
-                   {18.f, 0.f, 8.f}};
-    a.schedule = fury::NpcSchedule::DayOnly;
-    a.home = {18.f, 0.f, 22.f};
-    spawn_npc(std::move(a), {0.85f, 0.62f, 0.45f});
-  }
-  {
-    fury::NpcAgent a;
-    a.name = "CivC";
-    a.display_name = "Tessa Quill";
-    a.entity_name = "NpcCivC";
-    a.kind = fury::NpcKind::Civilian;
-    a.height = 1.65f;
-    a.position = {88.f, 0.825f, 8.f};
-    a.speed = 2.0f;
-    a.waypoints = {{88.f, 0.f, 8.f}, {102.f, 0.f, 8.f}, {102.f, 0.f, 18.f},
-                   {88.f, 0.f, 18.f}, {70.f, 0.f, 6.f}};
-    a.schedule = fury::NpcSchedule::DayOnly;
-    a.home = {88.f, 0.f, 8.f};
-    spawn_npc(std::move(a), {0.65f, 0.80f, 0.55f});
-  }
-  {
-    fury::NpcAgent g;
-    g.name = "BankGuard";
-    g.display_name = "Sgt. Hale";
-    g.entity_name = "NpcGuard";
-    g.kind = fury::NpcKind::Guard;
-    g.height = 1.85f;
-    g.position = {4.f, 0.925f, -2.f};
-    g.speed = 1.6f;
-    g.chase_speed = 3.5f;
-    g.waypoints = {{4.f, 0.f, -2.f}, {-4.f, 0.f, -2.f}, {-4.f, 0.f, 4.f},
-                   {4.f, 0.f, 4.f}, {0.f, 0.f, -6.f}};
-    g.schedule = fury::NpcSchedule::NightTighten;
-    g.home = {0.f, 0.f, 0.f};
-    spawn_npc(std::move(g), {0.25f, 0.35f, 0.55f});
-  }
-  // Meridian Mutual interior anchors (teller / desk guard / lobby customer / alley HMPD)
-  {
-    fury::NpcAgent a;
-    a.name = "BankTeller";
-    a.display_name = "Lia Merrow";
-    a.entity_name = "NpcTeller";
-    a.kind = fury::NpcKind::Civilian;
-    a.height = 1.68f;
-    a.position = {0.15f, 0.84f, -7.4f};
-    a.speed = 0.35f;
-    a.waypoints = {{0.15f, 0.f, -7.4f}, {-0.6f, 0.f, -7.4f}, {0.7f, 0.f, -7.4f}};
-    a.schedule = fury::NpcSchedule::DayOnly;
-    a.home = {0.15f, 0.f, -7.4f};
-    spawn_npc(std::move(a), {0.42f, 0.55f, 0.62f});
-  }
-  {
-    fury::NpcAgent g;
-    g.name = "BankDeskGuard";
-    g.display_name = "Ofc. Renn";
-    g.entity_name = "NpcDeskGuard";
-    g.kind = fury::NpcKind::Guard;
-    g.height = 1.82f;
-    g.position = {-5.1f, 0.91f, -9.4f};
-    g.speed = 1.15f;
-    g.chase_speed = 3.4f;
-    g.waypoints = {{-5.1f, 0.f, -9.4f}, {-4.2f, 0.f, -11.5f}, {-5.8f, 0.f, -8.2f}};
-    g.schedule = fury::NpcSchedule::Always;
-    g.home = {-5.1f, 0.f, -9.4f};
-    spawn_npc(std::move(g), {0.22f, 0.32f, 0.48f});
-  }
-  {
-    fury::NpcAgent a;
-    a.name = "BankCustomer";
-    a.display_name = "Owen Pike";
-    a.entity_name = "NpcBankCust";
-    a.kind = fury::NpcKind::Civilian;
-    a.height = 1.74f;
-    a.position = {1.2f, 0.87f, -5.2f};
-    a.speed = 0.9f;
-    a.waypoints = {{1.2f, 0.f, -5.2f}, {-1.0f, 0.f, -4.8f}, {0.4f, 0.f, -5.6f}};
-    a.schedule = fury::NpcSchedule::DayOnly;
-    a.home = {1.2f, 0.f, -5.2f};
-    spawn_npc(std::move(a), {0.62f, 0.48f, 0.40f});
-  }
-  {
-    fury::NpcAgent g;
-    g.name = "AlleyHmpd";
-    g.display_name = "Ofc. Vale";
-    g.entity_name = "NpcAlleyHmpd";
-    g.kind = fury::NpcKind::Guard;
-    g.height = 1.86f;
-    g.position = {16.2f, 0.93f, -12.0f};
-    g.speed = 1.4f;
-    g.chase_speed = 3.8f;
-    g.waypoints = {{16.2f, 0.f, -12.0f}, {14.5f, 0.f, -15.5f}, {17.5f, 0.f, -10.5f}};
-    g.schedule = fury::NpcSchedule::NightTighten;
-    g.home = {16.2f, 0.f, -12.0f};
-    spawn_npc(std::move(g), {0.18f, 0.28f, 0.55f});
-  }
-  // Ashcourt civilian
-  {
-    fury::NpcAgent a;
-    a.name = "CivAsh";
-    a.display_name = "Nell Ash";
-    a.entity_name = "NpcCivAsh";
-    a.kind = fury::NpcKind::Civilian;
-    a.height = 1.75f;
-    a.position = {-88.f, 0.875f, 42.f};
-    a.speed = 1.9f;
-    a.waypoints = {{-88.f, 0.f, 42.f}, {-80.f, 0.f, 42.f}, {-80.f, 0.f, 50.f},
-                   {-92.f, 0.f, 50.f}, {-70.f, 0.f, 28.f}};
-    a.schedule = fury::NpcSchedule::DayOnly;
-    a.home = {-88.f, 0.f, 42.f};
-    spawn_npc(std::move(a), {0.72f, 0.58f, 0.40f});
-  }
-  // Extra daytime civilians (4.4.0 denser day streets)
-  {
-    fury::NpcAgent a;
-    a.name = "CivD";
-    a.display_name = "Pax Wren";
-    a.entity_name = "NpcCivD";
-    a.kind = fury::NpcKind::Civilian;
-    a.height = 1.72f;
-    a.position = {-6.f, 0.86f, 28.f};
-    a.speed = 2.2f;
-    a.waypoints = {{-6.f, 0.f, 28.f}, {8.f, 0.f, 28.f}, {8.f, 0.f, 14.f},
-                   {-6.f, 0.f, 14.f}};
-    a.schedule = fury::NpcSchedule::DayOnly;
-    a.home = {-6.f, 0.f, 28.f};
-    spawn_npc(std::move(a), {0.70f, 0.68f, 0.90f});
-  }
-  {
-    fury::NpcAgent a;
-    a.name = "CivE";
-    a.display_name = "Rina Holt";
-    a.entity_name = "NpcCivE";
-    a.kind = fury::NpcKind::Civilian;
-    a.height = 1.68f;
-    a.position = {48.f, 0.84f, -8.f};
-    a.speed = 2.05f;
-    a.waypoints = {{48.f, 0.f, -8.f}, {62.f, 0.f, -8.f}, {62.f, 0.f, 6.f},
-                   {48.f, 0.f, 6.f}};
-    a.schedule = fury::NpcSchedule::DayOnly;
-    a.home = {48.f, 0.f, -8.f};
-    spawn_npc(std::move(a), {0.90f, 0.70f, 0.55f});
-  }
-  // Ashcourt fence broker (near shop) — unique Q dialogue role; day open hours only
-  {
-    fury::NpcAgent f;
-    f.name = "Fence";
-    f.display_name = "Cass Vesper";
-    f.entity_name = "NpcFence";
-    f.kind = fury::NpcKind::Fence;
-    f.height = 1.78f;
-    f.position = {-84.f, 0.89f, 46.f};
-    f.speed = 1.2f;
-    f.waypoints = {{-84.f, 0.f, 46.f}, {-88.f, 0.f, 50.f}, {-82.f, 0.f, 50.f},
-                   {-86.f, 0.f, 45.f}};
-    f.schedule = fury::NpcSchedule::DayOnly;  // open hours only
-    f.home = {-86.f, 0.f, 48.f};
-    spawn_npc(std::move(f), {0.90f, 0.55f, 0.28f});
-  }
+  for(auto spawn:vaultline::make_npc_roster())
+    spawn_npc(std::move(spawn.agent),spawn.color);
 
   // Police chase AI — HMPD cruiser visuals (pursuit logic unchanged).
   // Material-group placement preserves livery / glass / trim for mission cars.
@@ -4140,43 +4086,19 @@ int main(int argc, char** argv) {
   int radio_station = 0;
   bool c_was_down = false;
 
-  // AI crew stubs (follow during heist) — low-poly humanoids
+  // Exact authored crew roster; detailed presentation does not own AI state.
   fury::CrewSystem crew;
-  {
-    fury::CrewMember c;
-    c.name = "Crew-Rook";
-    c.display_name = "Rook";
-    c.entity_name = "CrewRook";
-    c.height = 1.7f;
-    c.follow_offset = {-1.8f, 0.f, -1.4f};
-    c.position = {-2.f, 0.85f, 14.f};
-    crew.add(std::move(c));
+  for(auto spawn:vaultline::make_crew_roster()) {
     fury::Entity e;
-    e.name = "CrewRook";
-    e.mesh = app.scene().add_mesh(
-        fury::make_humanoid(1.7f, fury::Vec3{0.35f, 0.75f, 0.55f}, 0.f));
-    e.transform.position = {-2.f, 0.85f, 14.f};
-    e.material.albedo = {0.35f, 0.75f, 0.55f};
-    e.material.roughness = 0.6f;
+    e.name=spawn.member.entity_name;
+    e.mesh=app.scene().add_mesh(fury::make_humanoid(spawn.member.height,spawn.color,0.f));
+    e.transform.position=spawn.member.position;
+    e.material.albedo=spawn.color;
+    e.material.roughness=0.6f;
+    npc_presentation.install(app.scene(),e,spawn.member.height,
+        vaultline::npc_character_role(e.name),spawn.color);
     app.scene().add_entity(std::move(e));
-  }
-  {
-    fury::CrewMember c;
-    c.name = "Crew-Sparrow";
-    c.display_name = "Sparrow";
-    c.entity_name = "CrewSparrow";
-    c.height = 1.72f;
-    c.follow_offset = {1.8f, 0.f, -1.2f};
-    c.position = {2.f, 0.86f, 14.f};
-    crew.add(std::move(c));
-    fury::Entity e;
-    e.name = "CrewSparrow";
-    e.mesh = app.scene().add_mesh(
-        fury::make_humanoid(1.72f, fury::Vec3{0.75f, 0.45f, 0.35f}, 0.f));
-    e.transform.position = {2.f, 0.86f, 14.f};
-    e.material.albedo = {0.75f, 0.45f, 0.35f};
-    e.material.roughness = 0.6f;
-    app.scene().add_entity(std::move(e));
+    crew.add(std::move(spawn.member));
   }
 
   // 2.7.0 replay ghost trail markers (hidden until F10 scrub)
@@ -4205,6 +4127,9 @@ int main(int argc, char** argv) {
   float player_anim_phase = 0.f;
   float player_breathe_phase = 0.f;
   float player_move_weight = 0.f;
+  double player_travel_distance=0.0,ghost_travel_distance=0.0;
+  Vec3 player_previous_position{},ghost_previous_position{};
+  bool player_position_valid=false,ghost_position_valid=false;
   {
     fury::Entity e;
     e.name = "PlayerBody";
@@ -4216,6 +4141,7 @@ int main(int argc, char** argv) {
     e.material.metallic = 0.05f;
     e.visible = false;
     e.solid = false;
+    npc_presentation.install(app.scene(),e,kPlayerBodyHeight,fury::CharacterRole::Player,kPlayerBodyColor);
     app.scene().add_entity(std::move(e));
   }
 
@@ -4413,6 +4339,11 @@ int main(int argc, char** argv) {
     app.camera().invert_y = vl_settings.invert_y;
     app.camera().fov_y_degrees = vl_settings.fov_y_degrees;
     audio->set_master_volume(vl_settings.master_volume);
+    if(app.renderer().backend_kind()==fury::RenderBackendKind::CpuRayTracing) {
+      auto rendering=app.renderer().settings();
+      rendering.trace_mode=static_cast<fury::TraceMode>(vl_settings.trace_mode);
+      app.renderer().configure(rendering);
+    }
     if(app.renderer().backend_kind()==fury::RenderBackendKind::Direct3D12) {
       const auto previous=app.renderer().settings(); auto rendering=previous;
       rendering.trace_mode=static_cast<fury::TraceMode>(vl_settings.trace_mode);
@@ -4752,6 +4683,7 @@ int main(int argc, char** argv) {
     ghost.transform.position = {8.f, 0.9f, 10.f};
     ghost.material.metallic = 0.2f;
     ghost.material.roughness = 0.5f;
+    npc_presentation.install(app.scene(),ghost,1.8f,fury::CharacterRole::Ghost,{0.3f,0.7f,0.9f});
     app.scene().add_entity(std::move(ghost));
   }
 
@@ -4776,7 +4708,7 @@ int main(int argc, char** argv) {
   float ghost_last_cash = -1.f;
 
   // Presentation + onboarding + cutscene / finale / help 2.0.0 / pursuit / factions / safehouse
-  float splash_remaining = smoke_mode ? 0.f : 1.5f;
+  float splash_remaining = (smoke_mode || photo_launch || !npc_capture_id.empty()) ? 0.f : 1.5f;
   auto try_unlock_achievement = [&](fury::AchievementId id) {
     if (achievements.try_unlock(id)) {
       ach_banner.trigger(id);
@@ -4818,6 +4750,25 @@ int main(int argc, char** argv) {
   float replay_load_tip_timer = 0.f;
   float replay_load_confirm_timer = 0.f;  // F11 again loads vaultline_replay.json
   fury::PhotoMode photo_mode;
+  if(photo_launch) {
+    if(!capture_view.empty()) {
+      const auto* view=vaultline::world_capture_view(capture_view);
+      const Vec3 direction=fury::normalize(view->target-view->eye);
+      app.camera().position=view->eye;
+      app.camera().yaw=std::atan2(direction.z,direction.x);
+      app.camera().pitch=std::asin(direction.y);
+      if(view->fov_y>0.f) app.camera().fov_y_degrees=view->fov_y;
+      app.camera().snap_look();
+      if(capture_view=="world-overview") {
+        app.config().cull_distance=500.f;
+        app.config().lod_mid_distance=500.f;
+        app.camera().far_plane=600.f;
+        base_lit.fog_start=350.f;base_lit.fog_end=650.f;
+      }
+    }
+    photo_mode.enter(app.camera());
+    app.input().set_escape_modal(true);
+  }
   fury::ReplayBuffer replay;
   float photo_tip_timer = 0.f;
   float replay_tip_timer = 0.f;
@@ -4837,7 +4788,7 @@ int main(int argc, char** argv) {
   int onboard_tip_logged = -1;
   float smoke_elapsed = 0.f;
   fury::CutsceneStub intro_cutscene;
-  bool cutscene_pending = !smoke_mode;  // play once after splash (skip cutscene+chat in CI smoke)
+  bool cutscene_pending = !smoke_mode && npc_capture_id.empty();  // play once after splash (skip cutscene+chat in CI smoke)
   const Vec3 gameplay_spawn{0.f, 1.7f, 12.f};
   const float gameplay_yaw = -1.5707963f;
   const float gameplay_pitch = -0.08f;
@@ -4880,7 +4831,7 @@ int main(int argc, char** argv) {
   std::string chat_buffer;
   bool local_ready = false;
   bool lobby_open = false;
-  bool lobby_auto_armed = true;  // re-arm when not all ready
+  bool lobby_auto_armed = npc_capture_id.empty();  // re-arm when not all ready
   bool l_was_down = false;
   int mirrored_mission = -1;
   std::uint8_t mirrored_phase = 255;
@@ -5075,7 +5026,24 @@ int main(int argc, char** argv) {
     return false;
   };
 
+  Vec3 npc_capture_offset{npc_capture_distance*.28f,.18f,npc_capture_distance};
+  auto position_npc_capture_camera=[&]() {
+    if(npc_capture_id.empty())return;
+    auto* entity=app.scene().find_by_name(npc_capture_id);if(!entity)return;
+    entity->visible=true;
+    Vec3 target=entity->transform.position;
+    if(npc_capture_distance<1.5f)target.y+=.55f;
+    app.camera().position=target+npc_capture_offset;
+    const Vec3 direction=fury::normalize(target-app.camera().position);
+    app.camera().yaw=std::atan2(direction.z,direction.x);
+    app.camera().pitch=std::asin(std::clamp(direction.y,-1.f,1.f));
+    app.camera().fov_y_degrees=42.f;app.camera().fly_mode=true;
+    app.camera().third_person=false;app.camera().velocity={};app.camera().snap_look();
+  };
+
   app.on_update = [&](float dt, const fury::InputState& input) {
+    app.config().freeze_render_time=photo_mode.active;
+    if(npc_motion)position_npc_capture_camera();
     if (fast_travel_cd > 0.f && !map_panel.open) {
       fast_travel_cd = (std::max)(0.f, fast_travel_cd - dt);
     }
@@ -5124,7 +5092,7 @@ int main(int argc, char** argv) {
     }
 
     alarm_time += dt;
-    if (smoke_mode) {
+    if (smoke_mode && !photo_mode.active) {
       smoke_elapsed += dt;
       if (heist_capture_mode) {
         if (wishlist.update_heist_capture(app.scene(), npcs, traffic, app.camera(),
@@ -5457,7 +5425,8 @@ int main(int argc, char** argv) {
             break;
           }
           case 10: case 11: case 12:
-            if(app.renderer().backend_kind()!=fury::RenderBackendKind::Direct3D12) { changed=false; break; }
+            if(app.renderer().backend_kind()!=fury::RenderBackendKind::Direct3D12 &&
+               !(row==10 && app.renderer().backend_kind()==fury::RenderBackendKind::CpuRayTracing)) { changed=false; break; }
             if(row==10) vl_settings.trace_mode=(vl_settings.trace_mode+dir+2)%2;
             if(row==11) vl_settings.upscaler=(vl_settings.upscaler+dir+3)%3;
             if(row==12) vl_settings.upscale_quality=(vl_settings.upscale_quality+dir+5)%5;
@@ -5746,7 +5715,7 @@ int main(int argc, char** argv) {
       }
       app.camera().fly_mode = true;
       app.camera().vehicle_seated = false;
-      day_night.update(dt);
+      // Photo mode freezes lighting as well as geometry so CPU/DXR history can converge.
       fury::Lighting framed_photo = day_night.apply(base_lit);
       app.renderer().set_lighting(framed_photo);
       app.config().clear_color = day_night.sky_clear();
@@ -6380,7 +6349,9 @@ int main(int argc, char** argv) {
       if (agent.kind == fury::NpcKind::Enforcer) {
         agent.chasing = complications.enforcer_alive;
       } else {
-        agent.chasing = heat.normalized() >= 0.45f ||
+        const bool investigating=(wishlist.guard_investigating||wishlist.guard_escalated) &&
+            (agent.entity_name=="NpcDeskGuard"||agent.entity_name=="NpcGuard");
+        agent.chasing = heat.normalized() >= 0.45f || investigating ||
                         (complications.extra_guard_alive &&
                          agent.entity_name == "NpcExtraGuard");
       }
@@ -6421,7 +6392,12 @@ int main(int argc, char** argv) {
         ent->visible = true;
         ent->transform.position = agent.position;
         ent->transform.rotation_euler.y = agent.yaw;
-        if (ent->mesh) {
+        if(npc_presentation.enabled()) {
+          npc_presentation.advance(agent.entity_name,
+              {agent.position,agent.yaw,agent.actual_speed,agent.travel_distance,
+               agent.move_weight,agent.turn_rate,0.f,agent.on_duty},
+              dt,app.camera().position,app.config().lod_mid_distance);
+        } else if (ent->mesh) {
           fury::pose_humanoid(*ent->mesh, agent.height, ent->material.albedo,
                               agent.anim_phase, agent.breathe_phase,
                               agent.move_weight);
@@ -6451,54 +6427,11 @@ int main(int argc, char** argv) {
     focus_npc_id.clear();
     focus_npc_label.clear();
     {
-      const Vec3& cam = app.camera().position;
-      const float yaw = app.camera().yaw;
-      const float fx = std::sin(yaw);
-      const float fz = std::cos(yaw);
-      constexpr float kTalkRadius = 5.5f;
-      constexpr float kLookDot = 0.55f;
-      float best_score = -1.f;
-      auto consider = [&](const char* id, const char* label, fury::DialogueRole role,
-                          const Vec3& pos) {
-        const float dx = pos.x - cam.x;
-        const float dz = pos.z - cam.z;
-        const float d = std::sqrt(dx * dx + dz * dz);
-        if (d > kTalkRadius || d < 1e-3f) {
-          return;
-        }
-        const float inv = 1.f / d;
-        const float look = dx * inv * fx + dz * inv * fz;
-        if (look < kLookDot) {
-          return;
-        }
-        const float score = look * 2.f + (1.f - d / kTalkRadius);
-        if (score > best_score) {
-          best_score = score;
-          focus_npc_id = id;
-          focus_npc_label = label;
-          focus_role = role;
-          nameplate_show = true;
-          nameplate_role = role;
-          nameplate_fill = 0.35f + 0.55f * std::clamp(look, 0.f, 1.f);
-        }
-      };
-      for (const auto& agent : npcs.agents()) {
-        if (!agent.on_duty) {
-          continue;  // Cass / day civs off-shift at night
-        }
-        fury::DialogueRole role = fury::DialogueRole::Civilian;
-        if (agent.kind == fury::NpcKind::Guard ||
-            agent.kind == fury::NpcKind::Enforcer) {
-          role = fury::DialogueRole::Guard;
-        } else if (agent.kind == fury::NpcKind::Fence) {
-          role = fury::DialogueRole::Fence;
-        }
-        consider(agent.entity_name.c_str(), agent.label(), role, agent.position);
-      }
-      for (const auto& cm : crew.members()) {
-        if (!cm.active) continue;
-        consider(cm.entity_name.c_str(), cm.label(), fury::DialogueRole::Crew,
-                 cm.position);
+      const auto focus=vaultline::find_npc_talk_focus(npcs,crew,app.camera().position,app.camera().yaw);
+      if(focus) {
+        focus_npc_id=focus.entity_name;focus_npc_label=focus.label;
+        focus_role=focus.role;nameplate_role=focus.role;
+        nameplate_show=true;nameplate_fill=focus.nameplate_fill;
       }
       // Approach log — once when a named NPC newly enters focus
       if (!focus_npc_id.empty() && focus_npc_id != approach_logged_id) {
@@ -6523,6 +6456,7 @@ int main(int argc, char** argv) {
           dialogue_role = focus_role;
           dialogue_speaker = focus_npc_label;
           dialogue_timer = 4.2f;
+          npc_presentation.talk(focus_npc_id,app.camera().position,dialogue_timer);
           fury::Log::info(std::string("[TALK] ") + dialogue_speaker + " (" +
                           fury::DialogueBarks::role_label(dialogue_role) + "):");
           for (const auto& line : dialogue_lines) {
@@ -6963,7 +6897,12 @@ int main(int argc, char** argv) {
         ent->transform.position = cm.position;
         ent->transform.rotation_euler.y = cm.yaw;
         ent->visible = true;
-        if (ent->mesh) {
+        if(npc_presentation.enabled()) {
+          npc_presentation.advance(cm.entity_name,
+              {cm.position,cm.yaw,cm.actual_speed,cm.travel_distance,
+               cm.move_weight,cm.turn_rate,0.f,cm.active},
+              dt,app.camera().position,app.config().lod_mid_distance);
+        } else if (ent->mesh) {
           fury::pose_humanoid(*ent->mesh, cm.height, ent->material.albedo,
                               cm.anim_phase, cm.breathe_phase, cm.move_weight);
         }
@@ -6988,13 +6927,20 @@ int main(int argc, char** argv) {
             player_move_weight =
                 (std::max)(0.f, player_move_weight - dt * 4.f);
           }
-          const float body_h = app.camera().crouching
+          const float body_h = app.camera().crouching && !npc_presentation.enabled()
                                     ? kPlayerBodyHeight * 0.62f
                                     : kPlayerBodyHeight;
           body->transform.position = {
               app.camera().position.x, body_h * 0.5f, app.camera().position.z};
-          body->transform.rotation_euler.y = app.camera().yaw;
-          if (body->mesh) {
+          body->transform.rotation_euler.y = 1.57079632679f-app.camera().yaw;
+          if(npc_presentation.enabled()) {
+            if(player_position_valid) player_travel_distance+=std::min(1.f,dist_xz(body->transform.position,player_previous_position));
+            player_previous_position=body->transform.position;player_position_valid=true;
+            npc_presentation.advance(body->name,
+                {body->transform.position,body->transform.rotation_euler.y,spd,player_travel_distance,
+                 player_move_weight,std::numeric_limits<float>::quiet_NaN(),app.camera().crouching?1.f:0.f,true},
+                dt,app.camera().position,app.config().lod_mid_distance);
+          } else if (body->mesh) {
             fury::pose_humanoid(*body->mesh, body_h, kPlayerBodyColor,
                                 player_anim_phase, player_breathe_phase,
                                 player_move_weight);
@@ -7059,7 +7005,7 @@ int main(int argc, char** argv) {
               "TIP: Breaker box — press E to cut security cameras for this site");
         }
         if (input.interact_pressed && !door_consumed_interact) {
-          if (wishlist.try_security_interact(app.scene(), app.camera().position)) {
+          if (wishlist.try_security_interact(app.scene(), security, app.camera().position)) {
             door_consumed_interact = true;
             audio->play_cue("impact");
           }
@@ -7090,7 +7036,7 @@ int main(int argc, char** argv) {
       } else {
         breaker_tip_logged = false;
         if (input.interact_pressed && !door_consumed_interact &&
-            wishlist.try_security_interact(app.scene(), app.camera().position)) {
+            wishlist.try_security_interact(app.scene(), security, app.camera().position)) {
           door_consumed_interact = true;
           audio->play_cue("impact");
         }
@@ -7579,7 +7525,17 @@ int main(int argc, char** argv) {
       if (!net_client->remote_players().empty()) {
         const auto& rp = net_client->remote_players().front();
         remote_ent->transform.position = {rp.position.x, 0.9f, rp.position.z};
-        remote_ent->transform.rotation_euler.y = rp.yaw;
+        remote_ent->transform.rotation_euler.y = 1.57079632679f-rp.yaw;
+        if(npc_presentation.enabled()) {
+          const float distance=ghost_position_valid?std::min(1.f,dist_xz(remote_ent->transform.position,ghost_previous_position)):0.f;
+          ghost_travel_distance+=distance;
+          ghost_previous_position=remote_ent->transform.position;ghost_position_valid=true;
+          const float speed=dt>0.f?distance/dt:0.f;
+          npc_presentation.advance(remote_ent->name,
+              {remote_ent->transform.position,remote_ent->transform.rotation_euler.y,speed,ghost_travel_distance,
+               std::clamp(speed/1.5f,0.f,1.f),std::numeric_limits<float>::quiet_NaN(),0.f,true},
+              dt,app.camera().position,app.config().lod_mid_distance);
+        }
         remote_ent->visible = true;
         // Synced cash flash when Ghost wallet jumps
         if (ghost_last_cash >= 0.f && rp.cash > ghost_last_cash + 0.5f) {
@@ -7589,7 +7545,7 @@ int main(int argc, char** argv) {
         ghost_cash_flash = (std::max)(0.f, ghost_cash_flash - dt);
         const float ht = std::clamp(rp.heat, 0.f, 1.f);
         const float flash = ghost_cash_flash;
-        remote_ent->material.albedo = {
+        remote_ent->material.albedo = npc_presentation.enabled() ? Vec3{1.f+0.2f*flash,1.f-0.15f*ht,1.f-0.2f*ht} : Vec3{
             0.3f + 0.7f * ht + 0.6f * flash,
             0.7f - 0.4f * ht + 0.5f * flash,
             0.9f - 0.6f * ht * (1.f - flash)};
@@ -7613,6 +7569,8 @@ int main(int argc, char** argv) {
 
     // 2.7.0 — keep last N seconds of player transform for F10 scrub
     replay.push(app.camera(), dt);
+
+    if(npc_motion)position_npc_capture_camera();
 
     status_timer += dt;
     if (status_timer >= 2.0f) {
@@ -7995,11 +7953,71 @@ int main(int argc, char** argv) {
     dump_screenshot_if_pending();
   };
 
+  if(!npc_capture_id.empty()) {
+    if(npc_capture_id=="NpcExtraGuard")spawn_extra_guard_near_vault();
+    if(npc_capture_id=="NpcEnforcer")spawn_enforcer_near_vault();
+    bool valid=npc_capture_id=="PlayerBody"||npc_capture_id=="GhostLoop";
+    for(const auto& agent:npcs.agents())if(agent.entity_name==npc_capture_id) {
+      valid=true;
+      if(npc_motion)for(const auto& waypoint:agent.waypoints) {
+        const Vec3 delta{waypoint.x-agent.position.x,0,waypoint.z-agent.position.z};
+        if(fury::length(delta)>.1f){const Vec3 forward=fury::normalize(delta);npc_capture_offset=forward*npc_capture_distance+Vec3{forward.z*.7f,.18f,-forward.x*.7f};break;}
+      }
+    }
+    for(const auto& member:crew.members())if(member.entity_name==npc_capture_id)valid=true;
+    if(!valid){fury::Log::error("Unknown NPC capture ID: "+npc_capture_id);return EXIT_FAILURE;}
+    if(npc_motion&&(npc_capture_id=="PlayerBody"||npc_capture_id=="GhostLoop")) {
+      fury::Log::error("Player/network actors support --npc-view; motion needs live player/network input");return EXIT_FAILURE;
+    }
+    const float orbit=npc_capture_orbit*3.14159265359f/180.f;
+    npc_capture_offset={std::cos(orbit)*npc_capture_offset.x+std::sin(orbit)*npc_capture_offset.z,
+                        npc_capture_offset.y,
+                        -std::sin(orbit)*npc_capture_offset.x+std::cos(orbit)*npc_capture_offset.z};
+    position_npc_capture_camera();
+    if(npc_talk_capture)npc_presentation.talk(npc_capture_id,app.camera().position,4.2f);
+    fury::Log::info("NPC capture: "+npc_capture_id+(npc_motion?" live AI/animation":" frozen portrait")+" fixed_dt="+std::to_string(app.config().fixed_timestep));
+  }
   const int code = app.run();
+  bool npc_audit_ok=true;
+  if(!npc_audit_path.empty()) {
+    npc_audit_ok=npc_presentation.write_audit(npc_audit_path);
+    std::ofstream state(npc_audit_path+".state.json");
+    state<<std::setprecision(12)<<"{\"heist_phase\":"<<int(heist.phase())<<",\"agents\":[";
+    bool first=true;
+    for(const auto& a:npcs.agents()) {
+      if(!first)state<<',';
+      first=false;
+      state<<"{\"id\":"<<std::quoted(a.entity_name)<<",\"position\":["<<a.position.x<<','<<a.position.y<<','<<a.position.z
+           <<"],\"yaw\":"<<a.yaw<<",\"waypoint_index\":"<<a.waypoint_index<<",\"travel_distance\":"<<a.travel_distance
+           <<",\"actual_speed\":"<<a.actual_speed<<",\"on_duty\":"<<(a.on_duty?"true":"false")
+           <<",\"chasing\":"<<(a.chasing?"true":"false")<<",\"waypoints\":[";
+      bool first_point=true;for(const auto& w:a.waypoints){if(!first_point)state<<',';first_point=false;state<<'['<<w.x<<','<<w.y<<','<<w.z<<']';}
+      state<<"]}";
+    }
+    state<<"],\"crew\":[";first=true;
+    for(const auto& c:crew.members()) {
+      if(!first)state<<',';
+      first=false;
+      state<<"{\"id\":"<<std::quoted(c.entity_name)<<",\"position\":["<<c.position.x<<','<<c.position.y<<','<<c.position.z
+           <<"],\"yaw\":"<<c.yaw<<",\"travel_distance\":"<<c.travel_distance<<",\"active\":"<<(c.active?"true":"false")<<'}';
+    }
+    state<<"]}\n";state.flush();npc_audit_ok=npc_audit_ok&&state.good();
+    const auto metrics=app.renderer().statistics();
+    std::ofstream render(npc_audit_path+".render.json");
+    render<<std::setprecision(12)<<"{\"backend\":"<<std::quoted(app.renderer().backend_name())
+          <<",\"cpu_frame_ms\":"<<metrics.cpu_frame_ms<<",\"triangles\":"<<metrics.triangle_count
+          <<",\"unique_triangles\":"<<metrics.unique_triangle_count<<",\"instances\":"<<metrics.instance_count
+          <<",\"blas_builds\":"<<metrics.blas_builds<<",\"tlas_builds\":"<<metrics.tlas_builds
+          <<",\"frames\":"<<metrics.frame_index<<",\"accumulated_frames\":"<<metrics.accumulated_frames
+          <<",\"validation_errors\":"<<metrics.validation_errors<<",\"source_fingerprint\":"
+          <<std::quoted(fury::build_source_fingerprint())<<"}\n";
+    render.flush();npc_audit_ok=npc_audit_ok&&render.good();
+  }
 
-  autosave_slot();
-  persist_settings();
+
+  if(npc_capture_id.empty()){autosave_slot();persist_settings();}
   net_client->disconnect();  // joins/stops embedded UDP host thread
   audio->shutdown();
+  if(!npc_audit_ok){fury::Log::error("Could not write NPC audit: "+npc_audit_path);return EXIT_FAILURE;}
   return code;
 }
